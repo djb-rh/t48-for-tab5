@@ -1,0 +1,9 @@
+# Chip-test layout. The app and the filesystem both sit inside what is
+# Tabulous5's app slot on the same Tab5 (0x10000-0x610000), so flashing this
+# never touches Tabulous5's LittleFS at 0x610000, and reflashing Tabulous5
+# puts everything back.
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x5000,
+phy_init, data, phy,     0xe000,   0x1000,
+factory,  app,  factory, 0x10000,  0x300000,
+spiffs,   data, spiffs,  0x310000, 0x300000,
