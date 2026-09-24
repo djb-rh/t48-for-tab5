@@ -390,13 +390,13 @@ void connect(const std::string &ssid, const std::string &pass) {
 void begin() {
   g_mux = xSemaphoreCreateMutex();
   WiFi.mode(WIFI_STA);
-  // "T48-Burner-" and two bytes of the P4's factory MAC, so two Tab5s
+  // "T48-for-Tab5-" and two bytes of the P4's factory MAC, so two Tab5s
   // differ. (The Wi-Fi MAC comes from the C6 and read as zeros here.)
   const uint64_t mac = ESP.getEfuseMac();
   char ap[32];
-  snprintf(ap, sizeof(ap), "T48-Burner-%02X%02X", (unsigned)((mac >> 32) & 0xFF), (unsigned)((mac >> 40) & 0xFF));
+  snprintf(ap, sizeof(ap), "T48-for-Tab5-%02X%02X", (unsigned)((mac >> 32) & 0xFF), (unsigned)((mac >> 40) & 0xFF));
   g_ap = ap;
-  WiFi.setHostname("t48burner");
+  WiFi.setHostname("t48-for-tab5");
   auto &s = settings::get();
   if (s.wifi_ssid.empty()) {
     startPortal();   // nothing saved: set it up from a phone

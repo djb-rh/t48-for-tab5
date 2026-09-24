@@ -148,7 +148,7 @@ class MainScreen : public Screen {
     const Status &s = g_status;
     d().fillRect(0, 0, W, 56, kPanel);
     d().drawFastHLine(0, 56, W, kBorder);
-    text(20, 14, "T48 Burner", Font::Body, kText, kPanel);
+    text(20, 14, "T48 for Tab5", Font::Body, kText, kPanel);
     int x = 560;
     auto item = [&](const char *label, const std::string &value, uint32_t color) {
       text(x, 18, label, Font::Small, kDim, kPanel);

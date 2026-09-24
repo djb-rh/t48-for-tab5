@@ -4,7 +4,7 @@
 static const char kSetupPage[] = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>T48 Burner Wi-Fi</title>
+<title>T48 for Tab5 Wi-Fi</title>
 <style>
 :root{--bg:#0d1117;--panel:#161b22;--panel2:#21262d;--border:#30363d;--text:#e6edf3;--dim:#8b949e;--accent:#2f81f7;--good:#3fb950;--bad:#f85149}
 @media (prefers-color-scheme:light){:root{--bg:#f6f8fa;--panel:#fff;--panel2:#eef1f4;--border:#d0d7de;--text:#1f2328;--dim:#59636e;--accent:#0969da;--good:#1a7f37;--bad:#cf222e}}
@@ -21,7 +21,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 #status{margin-top:18px;padding:12px 14px;border-radius:8px;background:var(--panel);border:1px solid var(--border);display:none}
 #status.good{border-color:var(--good)}#status.bad{border-color:var(--bad)}a{color:var(--accent)}
 </style></head><body><main>
-<h1>T48 Burner Wi-Fi</h1>
+<h1>T48 for Tab5 Wi-Fi</h1>
 <p>Choose the network the Tab5 should join. It remembers it.</p>
 <div class="nets" id="nets"><div class="net"><span>Looking for networks...</span></div></div>
 <label for="ssid">Network name</label><input id="ssid" autocomplete="off" autocapitalize="none">

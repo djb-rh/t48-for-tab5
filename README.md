@@ -1,110 +1,133 @@
-# tab5-burner
+# T48 for Tab5
 
-An M5Stack Tab5 (with its keyboard) as a stand-alone front end for an XGecu
-T48 ROM programmer plugged into the Tab5's USB-A port. The plan is to port
-the programmer layer of [minipro](https://gitlab.com/DavidGriffith/minipro)
-(GPL-3.0-or-later) and put a touch + keyboard UI on it: part search, blank
-check, read, write, verify, a hex editor, and a web file manager for the SD card.
+A stand-alone EPROM/flash programmer: an [M5Stack Tab5](https://docs.m5stack.com/en/core/Tab5)
+with its clip-on keyboard drives an [XGecu T48](http://www.xgecu.com/) plugged
+into the Tab5's USB-A port. Pick a chip, pick an image, and blank check, read,
+write, verify or erase without a computer. ROM images live on the Tab5's SD
+card and move on and off it through a file manager in your browser.
 
-## The app (`pio run -e app -t upload`, the default env)
+Programming is done by [minipro](https://gitlab.com/DavidGriffith/minipro),
+compiled unchanged and running on the Tab5 itself; only its USB layer is
+replaced, so it behaves exactly as it does on a desktop.
 
-Tab5 + keyboard + T48 on USB-A + SD card. Everything lives under
-`/sdcard/burner` on a **FAT32** card (the prebuilt ESP-IDF has exFAT off; the
-console's `sdformat ERASE` formats one, erasing it):
+![Main screen](docs/main.png)
 
-    burner/db/      the part library, built on the Mac by tools/mkparts.py
+## What it does
+
+- **Every T48 part minipro knows** (about 30,000 names): type part of a name,
+  arrows and Enter to pick. Memory parts get blank check, read, write,
+  verify, erase and chip ID; logic parts get minipro's logic test.
+- **Write options** as toggles: size mismatch OK, skip erase, skip verify,
+  ignore chip ID mismatch.
+- **Hex editor** for the chosen image: 16 bytes a row with ASCII, type over
+  bytes on either side, go to an address, find hex bytes or text, undo, save
+  or save as; changed bytes are highlighted and the CRC32 is always shown.
+- **Browser file manager** for the card: drag-and-drop upload, download,
+  rename, folders, delete, and "Burn this" to make a file the image to write.
+- **Wi-Fi setup with no computer:** with no network saved (or one it cannot
+  join), the Tab5 opens an open `T48-for-Tab5-XXXX` hotspot whose captive
+  portal pops up on a phone to pick a network and type its password. The
+  Wi-Fi screen shows a QR code for it.
+- Reads and writes run at the same speed as minipro on a Mac (a 27C512 writes
+  in about 31 s; nearly all of that is the T48 programming).
+
+![Chip search](docs/chip-search.png)
+![Hex editor](docs/hex-editor.png)
+
+## Hardware
+
+- M5Stack Tab5 (ESP32-P4) and the M5Stack Tab5 Keyboard. Chip search needs
+  the keyboard; everything else also works by touch.
+- XGecu T48 in the Tab5's USB-A port. The port is the P4's high-speed USB 2.0
+  PHY and its 5 V switch (MT9700) comfortably powers the T48.
+- A microSD card formatted **FAT32** (the prebuilt ESP-IDF has exFAT off).
+
+**Battery charging is paused during every job.** While the Tab5's battery
+charges, the T48 only sees about 4.4 V; with charging paused it gets 5 V.
+The same pause covers the T48's inrush when the port powers up, which once
+browned the Tab5 out on a laptop port.
+
+Tested with T48 firmware 00.1.03 and 00.1.39 (the one minipro expects).
+
+## Building and flashing
+
+[PlatformIO](https://platformio.org/) with the pioarduino platform (in
+`platformio.ini`):
+
+    git clone --recursive https://github.com/djb-rh/t48-for-tab5
+    cd t48-for-tab5
+    pio run -e app -t upload
+
+The app occupies the first 6 MB of flash (`partitions_app.csv`).
+
+## The SD card
+
+Everything lives under `/burner` on the card:
+
+    burner/db/      the part library
     burner/sel/     minipro's one-part database for the chosen chip
     burner/images/  ROM images: reads land here, writes come from here
 
-Main screen keys: P choose chip (type to search 30,043 T48 parts), D chip
-info, F choose image, H hex editor, B blank check, R read, W write, V verify,
-E erase, I chip ID, T logic test (logic parts), 1-4 write options (size
-mismatch OK / skip erase / skip verify / ignore ID mismatch), N Wi-Fi.
-Everything is also a touch button. Battery charging pauses during every job.
+Build the part library from minipro's database on a computer, then upload
+the four files to `burner/db` with the browser file manager (or copy them to
+the card) and restart the Tab5:
 
-Hex editor: arrows, PgUp/PgDn, Home/End, Ctrl+Home/End; type hex (or text
-on the ASCII side, Tab switches); Ctrl+G go to, Ctrl+F find (hex bytes or
-"text"), Ctrl+N next, Ctrl+Z undo, Ctrl+S save, Ctrl+A save as, Esc close.
-Changed bytes are orange; the status line shows the CRC32.
+    python3 tools/mkparts.py third_party/minipro sd/burner/db
 
-Wi-Fi: joins the saved network (first boot: include/secrets.h, gitignored)
-and serves a file manager at http://<ip>/ for /burner: upload (drag and
-drop), download, rename, delete, folders, and "Burn this" to make a file the
-current image. ~300 KB/s up. The N screen scans and switches networks.
+minipro normally parses its whole 19 MB XML database several times per
+command. `mkparts.py` splits it into a sorted name index, the raw part
+entries and the database skeleton; choosing a part writes a database holding
+only that part, which minipro parses in milliseconds.
 
-Updating the part library: `python3 tools/mkparts.py third_party/minipro
-sd/burner/db`, upload the four files to burner/db in the browser, restart.
+## Using it
 
-Testing without touching the Tab5: `tools/tab5.py` runs one serial session
-(the port open resets the board) of console commands, `--key=`, `--tap=`,
-`--shot=`, `--put=`, `--get=`; `tools/monitor.py` just listens.
+Main screen keys (all are also buttons):
 
-### Lessons
-- **Internal RAM feeds the Wi-Fi transport.** With minipro's 48 KB stack and
-  a few 16 KB buffers in internal RAM, an upload left 4 KB of DMA memory in
-  one piece and the network died for good. Big buffers and that stack live
-  in PSRAM now (153 KB of DMA memory free at boot); `mem` shows it.
-- minipro takes the part database from `--infoic/--logicic`; a one-part file
-  parses in milliseconds where the full 19 MB XML would take seconds.
-- Reads and writes run at the Mac's speed: a 64 KB read in 355 ms, an
-  M27C512 write in 31.0 s (Mac 31.2 s). Of a 32.4 s write job, 30.9 s is the
-  T48 programming (the per-block status reply waits ~53 ms), 1.1 s other USB,
-  0.4 s minipro/SD/firmware; every job prints this breakdown to serial. The
-  chip test's 41 s write and 0.93 s read came from its screen redraw holding
-  a lock minipro's output path needed.
-- ESP-IDF logging is off: with the Mac attached but nothing reading serial,
-  uploads intermittently killed the network.
+| Key | | Key | |
+|---|---|---|---|
+| P | choose chip | B | blank check |
+| D | chip info | R | read (into `burner/images`) |
+| F | choose image | W | write |
+| H | hex editor | V | verify |
+| N | Wi-Fi | E | erase |
+| 1-4 | write options | I | chip ID (T: logic test) |
 
-## Phase 0 spike (`pio run -e spike -t upload`)
+Write and erase ask first. A read becomes the current image.
 
-Proves the hardware path. Result on 2026-09-24:
+Hex editor: arrows, PgUp/PgDn, Home/End, Ctrl+Home/End; hex digits (or text
+on the ASCII side; Tab switches sides); Ctrl+G go to, Ctrl+F find (`C3 00 10`
+or `"text"`), Ctrl+N next, Ctrl+Z undo, Ctrl+S save, Ctrl+A save as, Esc.
 
-- The USB-A socket is on the P4's high-speed PHY (schematic: USB2_OTG_D± →
-  USB_HOST_DP/DM → J10). Its 5 V comes through an MT9700 load switch
-  (U27, R_SET 5.1 kΩ, about 1.3 A if it follows the SY6280's 6800/R).
-- The T48 powers up from the port and enumerates at **480 Mbps**:
-  `a466:0a53`, one vendor interface, bulk EP 01/81 (commands) and 02/82
-  (payload), all 512-byte packets. It asks for 100 mA.
-- minipro's "get system info" (5 zero bytes out on EP 01, reply on EP 81)
-  comes back in ~20 ms: firmware 00.1.03, type 7 (T48), link 480 Mbps.
-- The T48's own supply reading (`minipro --version` prints it) is 5.18 V on
-  the Mac. On the Tab5 (USB-C from the Mac) it is **4.37 V while the battery
-  charges (~695 mA) and 4.97 V with charging off**, repeatably
-  (`tools/charge_test.py`, serial `c` toggles CHG_EN). So the burner pauses
-  charging (`M5.Power.setBatteryCharge(false)`) for any chip operation.
+The file manager is at the address shown in the header once the Tab5 is on
+Wi-Fi, and at `http://192.168.4.1/files` over the setup hotspot.
 
-The spike's status line shows the T48's supply reading and the INA226
-battery current live, so it can be watched on battery. Tap the screen for the
-full system info again; serial `i`/`d`/`p`/`u` are in `src/spike/main.cpp`.
+## Development
 
-### Notes for the port
-- The T48 path in minipro only ever uses EP 02 with `limit = 0`
-  (`t48_read_block`/`t48_write_block`), so minipro's two-endpoint split
-  transfers (TL866II+ only) are not needed.
-- IN transfers on ESP-IDF must be a whole number of max-size packets
-  (`usb_round_up_to_mps`); the reply is shorter and that is fine.
-- `tools/serial_read.py` opens the console without resetting into download
-  mode (rts/dtr False before open).
+- `src/app` is the app, `src/core` the USB layer (`usb_esp.cpp`, the ESP32-P4
+  host stack in place of minipro's libusb file) and minipro's `main()`
+  renamed so it can be called with an argv. `src/spike` and `src/chiptest`
+  are the bring-up steps (`pio run -e spike`, `-e chiptest`).
+- `tools/tab5.py` drives one serial session (opening the port resets the
+  Tab5): console commands, `--key=`, `--tap=`, `--shot=` screenshots,
+  `--put=`/`--get=` files. `tools/monitor.py` only listens. The console's
+  commands are listed at the top of `src/app/console.cpp`; every job prints
+  where its time went over USB.
 
-## Phase 1 chip test (`pio run -e chiptest -t upload`, then `-t uploadfs`)
+Lessons from getting here:
 
-minipro runs on the Tab5. Its sources are built unchanged except `main.c`
-(its `main` renamed and driven with an argv, `src/chiptest/minipro_main.c`)
-and `usb_nix.c` (replaced by `src/chiptest/usb_esp.cpp`). The database is
-`data/infoic.xml`, every 27C EPROM cut out of minipro's by
-`tools/trim_infoic.py`, on LittleFS at `/fs`. `tools/mp.py` sends commands
-over serial (`m <minipro args>`, `ls`, `crc`, `get`, `rm`); a tap on the
-screen runs a preset command for tests on battery.
+- **Internal RAM feeds the Wi-Fi.** The Tab5's radio is an ESP32-C6 behind
+  esp_hosted, whose transport needs DMA-capable internal RAM. With minipro's
+  48 KB stack and a few file buffers in internal RAM, one upload left 4 KB in
+  one piece and the network died for good. They live in PSRAM now.
+- **ESP-IDF logging is off.** With a computer attached but nothing reading
+  the USB serial port, log writes from the Wi-Fi stack stalled it and uploads
+  intermittently killed the network.
+- **Nothing should draw inside minipro's output path.** An early build redrew
+  the screen while holding a lock minipro's printing needed, which made reads
+  2.5x and writes 30% slower than on a Mac.
 
-Results on 2026-09-24 (T48 firmware 00.1.03):
+## Licence
 
-| Test | Tab5 | Mac (minipro 0.7.4) |
-|---|---|---|
-| Read TMS27C512, 64 KB | 0.93 s, CRC32 6252048b | 0.37 s, identical bytes |
-| Blank check / verify | correct both ways | - |
-| Write M27C512 (ST) | 41.2 s, verify OK, read-back CRC 6252048b | 31.2 s, verify OK |
-| Write TMS27C512 blank | fails at 0x0001 | fails identically: bad blank |
-
-Battery charging is paused while the T48 powers up (it browned the Tab5
-out once on a laptop port) and during every command (4.98 V at the T48
-instead of 4.37 V).
+GPL-3.0-or-later (see [LICENSE](LICENSE)), because it includes minipro, which
+is GPL-3.0-or-later. Copyright (C) 2026 Donald Barnes. minipro is copyright
+its authors; see `third_party/minipro`.

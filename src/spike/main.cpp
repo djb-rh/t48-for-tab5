@@ -65,7 +65,7 @@ void drawLog() {
   d.fillScreen(TFT_BLACK);
   d.setTextColor(TFT_YELLOW, TFT_BLACK);
   d.setCursor(8, 8);
-  d.print("tab5-burner spike: T48 on USB-A   ");
+  d.print("T48 for Tab5 spike: T48 on USB-A   ");
   d.setTextColor(TFT_CYAN, TFT_BLACK);
   d.print(g_status);
   d.setTextColor(TFT_WHITE, TFT_BLACK);

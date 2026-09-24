@@ -1,4 +1,4 @@
-// tab5-burner: an M5Stack Tab5 and its keyboard as a stand-alone front end
+// T48 for Tab5: an M5Stack Tab5 and its keyboard as a stand-alone front end
 // for an XGecu T48 on the USB-A port.
 //
 // minipro does the programming (third_party/minipro, driven by runner.cpp);
@@ -32,7 +32,7 @@ void usbLog(const char *line) { runner::note("%s", line); }
 void splash(const char *msg) {
   auto &d = M5.Display;
   d.fillScreen(ui::kBg);
-  ui::text(ui::W / 2, 300, "T48 Burner", ui::Font::Big, ui::kText, ui::kBg, 1);
+  ui::text(ui::W / 2, 300, "T48 for Tab5", ui::Font::Big, ui::kText, ui::kBg, 1);
   ui::text(ui::W / 2, 370, msg, ui::Font::Body, ui::kDim, ui::kBg, 1);
 }
 

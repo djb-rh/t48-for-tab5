@@ -4,7 +4,7 @@
 static const char kWebPage[] = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>T48 Burner</title>
+<title>T48 for Tab5</title>
 <style>
 :root{--bg:#0d1117;--panel:#161b22;--panel2:#21262d;--border:#30363d;--text:#e6edf3;--dim:#8b949e;--accent:#2f81f7;--good:#3fb950;--bad:#f85149;--warn:#d29922}
 @media (prefers-color-scheme:light){:root{--bg:#f6f8fa;--panel:#fff;--panel2:#eef1f4;--border:#d0d7de;--text:#1f2328;--dim:#59636e;--accent:#0969da;--good:#1a7f37;--bad:#cf222e;--warn:#9a6700}}
@@ -29,7 +29,7 @@ td.acts{text-align:right;white-space:nowrap}td.acts button{padding:3px 8px;font-
 .prog{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:8px}.prog i{display:block;height:100%;background:var(--accent);width:0}
 @media (max-width:600px){td.acts button{margin:2px 0 2px 4px}th.size,td.size{display:none}}
 </style></head><body>
-<header><h1>T48 Burner</h1><div id="state">...</div></header>
+<header><h1>T48 for Tab5</h1><div id="state">...</div></header>
 <main>
 <div class="bar"><div class="crumbs" id="crumbs"></div><div style="flex:1"></div>
 <button onclick="mkdir()">New folder</button>
