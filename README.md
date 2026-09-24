@@ -36,3 +36,26 @@ full system info again; serial `i`/`d`/`p`/`u` are in `src/spike/main.cpp`.
   (`usb_round_up_to_mps`); the reply is shorter and that is fine.
 - `tools/serial_read.py` opens the console without resetting into download
   mode (rts/dtr False before open).
+
+## Phase 1 chip test (`pio run -e chiptest -t upload`, then `-t uploadfs`)
+
+minipro runs on the Tab5. Its sources are built unchanged except `main.c`
+(its `main` renamed and driven with an argv, `src/chiptest/minipro_main.c`)
+and `usb_nix.c` (replaced by `src/chiptest/usb_esp.cpp`). The database is
+`data/infoic.xml`, every 27C EPROM cut out of minipro's by
+`tools/trim_infoic.py`, on LittleFS at `/fs`. `tools/mp.py` sends commands
+over serial (`m <minipro args>`, `ls`, `crc`, `get`, `rm`); a tap on the
+screen runs a preset command for tests on battery.
+
+Results on 2026-09-24 (T48 firmware 00.1.03):
+
+| Test | Tab5 | Mac (minipro 0.7.4) |
+|---|---|---|
+| Read TMS27C512, 64 KB | 0.93 s, CRC32 6252048b | 0.37 s, identical bytes |
+| Blank check / verify | correct both ways | - |
+| Write M27C512 (ST) | 41.2 s, verify OK, read-back CRC 6252048b | 31.2 s, verify OK |
+| Write TMS27C512 blank | fails at 0x0001 | fails identically: bad blank |
+
+Battery charging is paused while the T48 powers up (it browned the Tab5
+out once on a laptop port) and during every command (4.98 V at the T48
+instead of 4.37 V).
