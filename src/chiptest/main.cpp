@@ -282,6 +282,10 @@ void runnerTask(void *) {
 
 }  // namespace
 
+// A tap runs this, so a test can be done on battery with no computer
+// attached (the serial port goes away with the USB-C cable).
+constexpr const char *kTapCommand = "m -p TMS27C512@DIP28 -w /fs/read.bin";
+
 void setup() {
   auto cfg = M5.config();
   cfg.output_power = false;
@@ -316,10 +320,16 @@ void setup() {
   delay(500);
   g_want_charge = true;
   logf("ready: m <minipro args> | ls | crc <f> | get <f> | rm <f>");
+  logf("tap the screen to run: %s", kTapCommand);
 }
 
 void loop() {
   M5.update();
+  if (M5.Touch.getDetail().wasPressed() && !g_busy) {
+    strlcpy(g_cmdline, kTapCommand, sizeof(g_cmdline));
+    logf("> (tap) %s", kTapCommand);
+    g_busy = true;
+  }
   static char buf[256];
   static int len = 0;
   while (Serial.available()) {
