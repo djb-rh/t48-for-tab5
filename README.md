@@ -46,8 +46,14 @@ Testing without touching the Tab5: `tools/tab5.py` runs one serial session
   in PSRAM now (153 KB of DMA memory free at boot); `mem` shows it.
 - minipro takes the part database from `--infoic/--logicic`; a one-part file
   parses in milliseconds where the full 19 MB XML would take seconds.
-- Reads run at the Mac's speed (375 ms for 64 KB) once nothing redraws the
-  screen from inside minipro's output path.
+- Reads and writes run at the Mac's speed: a 64 KB read in 355 ms, an
+  M27C512 write in 31.0 s (Mac 31.2 s). Of a 32.4 s write job, 30.9 s is the
+  T48 programming (the per-block status reply waits ~53 ms), 1.1 s other USB,
+  0.4 s minipro/SD/firmware; every job prints this breakdown to serial. The
+  chip test's 41 s write and 0.93 s read came from its screen redraw holding
+  a lock minipro's output path needed.
+- ESP-IDF logging is off: with the Mac attached but nothing reading serial,
+  uploads intermittently killed the network.
 
 ## Phase 0 spike (`pio run -e spike -t upload`)
 
