@@ -16,6 +16,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <esp_timer.h>
 #include <usb/usb_host.h>
 
 #include <cstring>
@@ -44,6 +45,19 @@ LogFn g_log = nullptr;
 usb_transfer_t *g_xfer = nullptr;
 size_t g_xfer_cap = 0;
 SemaphoreHandle_t g_done = nullptr;
+
+Stats g_stats[4];
+
+int statIndex(uint8_t ep) {
+  switch (ep) {
+    case 0x01: return 0;
+    case 0x81: return 1;
+    case 0x02: return 2;
+    case 0x82: return 3;
+  }
+  return -1;
+}
+
 
 void log(const char *fmt, ...) {
   char buf[160];
@@ -193,6 +207,7 @@ int transfer(uint8_t ep, uint8_t *buf, size_t len, int *got, uint32_t timeout_ms
   t->context = nullptr;
   t->timeout_ms = 0;
   xSemaphoreTake(g_done, 0);   // stale give from an abandoned transfer
+  const int64_t t0 = esp_timer_get_time();
   if (usb_host_transfer_submit(t) != ESP_OK) {
     log("usb: submit on EP %02x failed", ep);
     return -1;
@@ -208,6 +223,13 @@ int transfer(uint8_t ep, uint8_t *buf, size_t len, int *got, uint32_t timeout_ms
   if (t->status != USB_TRANSFER_STATUS_COMPLETED) {
     log("usb: EP %02x transfer status %d", ep, (int)t->status);
     return -1;
+  }
+  const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
+  const int si = statIndex(ep);
+  if (si >= 0) {
+    g_stats[si].count++;
+    g_stats[si].us += us;
+    if (us > g_stats[si].max_us) g_stats[si].max_us = us;
   }
   *got = t->actual_num_bytes;
   if (in) memcpy(buf, t->data_buffer, (size_t)*got < len ? (size_t)*got : len);
@@ -243,6 +265,9 @@ void powerPort(bool on) {
 }
 
 bool attached() { return g_claimed; }
+
+void resetStats() { memset(g_stats, 0, sizeof(g_stats)); }
+Stats stats(int i) { return g_stats[i]; }
 
 }  // namespace usbdev
 

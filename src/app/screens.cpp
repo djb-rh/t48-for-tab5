@@ -59,7 +59,7 @@ class MainScreen : public Screen {
     drawChip();
     drawImage();
     drawActions();
-    drawLog();
+    drawLog(true);
   }
 
   void tick() override {
@@ -279,9 +279,37 @@ class MainScreen : public Screen {
     }
   }
 
-  void drawLog() {
+  // The log panel is drawn in full once; after that only what changed is
+  // painted, over the old pixels (text with background padding, the bar only
+  // growing), because clearing and redrawing it per progress step flickered.
+  struct LogView {
+    bool valid = false;
+    std::string head;
+    uint32_t head_color = 0;
+    std::string pct;
+    int bar_w = -1;
+    uint32_t bar_color = 0;
+    std::vector<std::string> lines;
+  } log_;
+
+  static uint32_t lineColor(const std::string &l) {
+    if (l.compare(0, 2, "> ") == 0) return kFaint;
+    if (l.find("fail") != std::string::npos || l.find("rror") != std::string::npos ||
+        l.find("not found") != std::string::npos || l.find("Invalid") != std::string::npos)
+      return kBad;
+    if (l.find("OK") != std::string::npos) return kGood;
+    return kDim;
+  }
+
+  void drawLog(bool full = false) {
+    constexpr int kBarX = 36, kBarY = 544, kBarW = 1208, kBarH = 14;
+    if (full || !log_.valid) {
+      panel(16, 496, 1248, 208, kPanel);
+      progressBar(kBarX, kBarY, kBarW, kBarH, 0, kPanel2);
+      log_ = LogView();
+      log_.valid = true;
+    }
     const auto st = runner::status();
-    panel(16, 496, 1248, 208, kPanel);
     std::string head;
     uint32_t color = kText;
     char b[120];
@@ -301,25 +329,39 @@ class MainScreen : public Screen {
       head = "Ready";
       color = kDim;
     }
-    text(36, 508, fit(head, Font::Body, 1000), Font::Body, color, kPanel);
+    head = fit(head, Font::Body, 1000);
+    if (head != log_.head || color != log_.head_color) {
+      text(36, 508, head, Font::Body, color, kPanel, 0, 1040);
+      log_.head = head;
+      log_.head_color = color;
+    }
+    std::string pct;
     if (st.busy && st.percent >= 0) {
       snprintf(b, sizeof(b), "%d%%", st.percent);
-      text(1244, 508, b, Font::Body, kText, kPanel, 2);
+      pct = b;
     }
-    const int pct = st.busy ? (st.percent >= 0 ? st.percent : 0) : (st.finished ? 100 : 0);
-    progressBar(36, 544, 1208, 14, pct, st.busy ? kAccent : (st.finished ? (st.rc ? kBad : kGood) : kPanel2));
+    if (pct != log_.pct) {
+      text(1244, 508, pct, Font::Body, kText, kPanel, 2, 120);
+      log_.pct = pct;
+    }
+    const int p = st.busy ? (st.percent >= 0 ? st.percent : 0) : (st.finished ? 100 : 0);
+    const uint32_t bc = st.busy ? kAccent : (st.finished ? (st.rc ? kBad : kGood) : kPanel2);
+    const int w = p <= 0 ? 0 : std::max(kBarH, kBarW * std::min(p, 100) / 100);
+    if (bc != log_.bar_color || w < log_.bar_w) {
+      progressBar(kBarX, kBarY, kBarW, kBarH, p, bc);   // a new job or a new colour
+    } else if (w > log_.bar_w) {
+      d().fillRoundRect(kBarX, kBarY, w, kBarH, kBarH / 2, bc);   // only grows: no clearing
+    }
+    log_.bar_w = w;
+    log_.bar_color = bc;
     const auto lines = runner::lines(5);
-    int y = 572;
-    for (const auto &l : lines) {
-      uint32_t c = kDim;
-      if (l.find("OK") != std::string::npos) c = kGood;
-      if (l.find("fail") != std::string::npos || l.find("rror") != std::string::npos ||
-          l.find("not found") != std::string::npos || l.find("Invalid") != std::string::npos)
-        c = kBad;
-      if (l.compare(0, 2, "> ") == 0) c = kFaint;
-      text(36, y, fit(l, Font::Small, 1208), Font::Small, c, kPanel);
-      y += 25;
+    for (int i = 0; i < 5; i++) {
+      const std::string l = i < (int)lines.size() ? fit(lines[i], Font::Small, 1208) : "";
+      if (i < (int)log_.lines.size() && log_.lines[i] == l) continue;
+      text(36, 572 + i * 25, l, Font::Small, lineColor(l), kPanel, 0, 1208);
     }
+    log_.lines.assign(5, "");
+    for (int i = 0; i < 5 && i < (int)lines.size(); i++) log_.lines[i] = fit(lines[i], Font::Small, 1208);
   }
 
   void finished(const runner::Status &st) {

@@ -32,7 +32,9 @@ void setFont(Font f);
 int textWidth(const char *s, Font f);
 int fontHeight(Font f);
 // Draws s with its top-left at (x, y). align: 0 left, 1 centre, 2 right of x.
-void text(int x, int y, const std::string &s, Font f, uint32_t fg, uint32_t bg, int align = 0);
+// pad > 0 paints the background out to that width, so a line can be redrawn
+// over the old one with no clearing (clearing first is what flickers).
+void text(int x, int y, const std::string &s, Font f, uint32_t fg, uint32_t bg, int align = 0, int pad = 0);
 // Shortens s with "..." until it fits in max_w pixels.
 std::string fit(const std::string &s, Font f, int max_w);
 

@@ -40,11 +40,13 @@ int fontHeight(Font f) {
   return d().fontHeight();
 }
 
-void text(int x, int y, const std::string &s, Font f, uint32_t fg, uint32_t bg, int align) {
+void text(int x, int y, const std::string &s, Font f, uint32_t fg, uint32_t bg, int align, int pad) {
   setFont(f);
   d().setTextColor(fg, bg);
   d().setTextDatum(align == 0 ? top_left : align == 1 ? top_center : top_right);
+  d().setTextPadding(pad);
   d().drawString(s.c_str(), x, y);
+  d().setTextPadding(0);
   d().setTextDatum(top_left);
 }
 

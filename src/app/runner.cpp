@@ -12,6 +12,8 @@
 #include <cstring>
 #include <deque>
 
+#include "../core/usb_esp.h"
+
 extern "C" int minipro_main(int argc, char **argv);
 extern "C" int optind, opterr;
 
@@ -111,6 +113,7 @@ void task(void *) {
     argv.push_back((char *)"minipro");
     for (auto &a : g_args) argv.push_back((char *)a.c_str());
     argv.push_back(nullptr);
+    usbdev::resetStats();
     optind = 0;   // newlib: a full getopt reset between runs
     opterr = 1;
     const int rc = minipro_main((int)argv.size() - 1, argv.data());
@@ -132,6 +135,22 @@ void task(void *) {
     xSemaphoreGive(g_mux);
     g_want_pause = false;
     g_go = false;
+    // Where the time went, to serial only: USB time is submit-to-completion,
+    // the rest is minipro, the SD card and this firmware.
+    {
+      static const char *names[4] = {"cmd out", "cmd in", "data out", "data in"};
+      uint64_t usb_us = 0;
+      for (int i = 0; i < 4; i++) {
+        const auto st = usbdev::stats(i);
+        usb_us += st.us;
+        if (st.count)
+          Serial.printf("usb %-8s %6lu transfers, avg %5lu us, max %6lu us\n", names[i], (unsigned long)st.count,
+                        (unsigned long)(st.us / st.count), (unsigned long)st.max_us);
+      }
+      const uint32_t ms = millis() - g_t0;
+      Serial.printf("job %lu ms: usb %lu ms, other %lu ms\n", (unsigned long)ms, (unsigned long)(usb_us / 1000),
+                    (unsigned long)(ms - usb_us / 1000));
+    }
     Serial.printf("== done %d\n", rc);
   }
 }

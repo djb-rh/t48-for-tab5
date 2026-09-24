@@ -1,6 +1,7 @@
 #include "web.h"
 
 #include <esp_heap_caps.h>
+#include <DNSServer.h>
 #include <WiFi.h>
 #include <dirent.h>
 #include <esp_http_server.h>
@@ -17,10 +18,7 @@
 #include "settings.h"
 #include "web_page.h"
 
-// Default network (gitignored; copy of the one Tabulous5 uses).
-#if __has_include("secrets.h")
-#include "secrets.h"
-#endif
+#include "web_setup.h"
 
 namespace burner {
 namespace web {
@@ -37,6 +35,19 @@ uint32_t g_join_ms = 0;
 httpd_handle_t g_server = nullptr;
 SemaphoreHandle_t g_mux;
 std::string g_chosen;
+
+// The setup hotspot. Up only while there is no network to be on.
+bool g_portal = false;
+std::string g_ap;
+DNSServer g_dns;
+uint32_t g_portal_close_ms = 0;        // when joined: close the hotspot at this time
+std::vector<Net> g_nets;               // the portal's last scan
+bool g_want_scan = false;
+std::string g_pending_ssid, g_pending_pass;
+bool g_pending_join = false;
+const IPAddress kApIp(192, 168, 4, 1);
+
+std::vector<Net> doScan();
 
 std::string query(httpd_req_t *req, const char *key) {
   char q[512];
@@ -206,11 +217,110 @@ esp_err_t handleUse(httpd_req_t *req) {
   return ok(req);
 }
 
+// ---- captive portal --------------------------------------------------------
+
+esp_err_t redirectToSetup(httpd_req_t *req) {
+  httpd_resp_set_status(req, "302 Found");
+  httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/setup");
+  httpd_resp_set_type(req, "text/html");
+  return httpd_resp_sendstr(req, "<a href=\"http://192.168.4.1/setup\">Wi-Fi setup</a>");
+}
+
+// Phones probe a known URL to spot a captive portal (Apple
+// /hotspot-detect.html, Android /generate_204, Windows /connecttest.txt).
+// With DNS answering every name with 192.168.4.1, those land here as
+// unknown paths; a redirect is what makes the phone open the setup page.
+esp_err_t handleNotFound(httpd_req_t *req, httpd_err_code_t) {
+  if (g_portal) return redirectToSetup(req);
+  return fail(req, "404 Not Found", "not found");
+}
+
+esp_err_t handleRoot(httpd_req_t *req) {
+  if (g_portal && g_state != State::Connected) return redirectToSetup(req);
+  return handlePage(req);
+}
+
+esp_err_t handleSetup(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html");
+  return httpd_resp_send(req, kSetupPage, sizeof(kSetupPage) - 1);
+}
+
+esp_err_t handleNets(httpd_req_t *req) {
+  if (query(req, "rescan") == "1") {
+    xSemaphoreTake(g_mux, portMAX_DELAY);
+    g_want_scan = true;   // the main loop owns the radio
+    xSemaphoreGive(g_mux);
+    for (int i = 0; i < 100 && g_want_scan; i++) vTaskDelay(pdMS_TO_TICKS(100));
+  }
+  xSemaphoreTake(g_mux, portMAX_DELAY);
+  std::string j = "[";
+  for (size_t i = 0; i < g_nets.size(); i++) {
+    char b[64];
+    snprintf(b, sizeof(b), ",\"rssi\":%d,\"open\":%s}", g_nets[i].rssi, g_nets[i].open ? "true" : "false");
+    j += std::string(i ? "," : "") + "{\"ssid\":" + jsonStr(g_nets[i].ssid) + b;
+  }
+  xSemaphoreGive(g_mux);
+  j += "]";
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, j.c_str());
+}
+
+std::string formValue(const std::string &body, const char *key) {
+  const std::string k = std::string(key) + "=";
+  size_t p = 0;
+  while (p < body.size()) {
+    size_t e = body.find('&', p);
+    if (e == std::string::npos) e = body.size();
+    if (body.compare(p, k.size(), k) == 0) {
+      std::string v, raw = body.substr(p + k.size(), e - p - k.size());
+      for (size_t i = 0; i < raw.size(); i++) {
+        if (raw[i] == '+') v += ' ';
+        else if (raw[i] == '%' && i + 2 < raw.size()) {
+          v += (char)strtol(raw.substr(i + 1, 2).c_str(), nullptr, 16);
+          i += 2;
+        } else v += raw[i];
+      }
+      return v;
+    }
+    p = e + 1;
+  }
+  return "";
+}
+
+esp_err_t handleWifi(httpd_req_t *req) {
+  const int n = req->content_len;
+  if (n <= 0 || n > 512) return fail(req, "400 Bad Request", "bad form");
+  std::string body(n, '\0');
+  int got = 0;
+  while (got < n) {
+    const int r = httpd_req_recv(req, &body[got], n - got);
+    if (r <= 0) return fail(req, "400 Bad Request", "bad form");
+    got += r;
+  }
+  const std::string ssid = formValue(body, "ssid");
+  if (ssid.empty()) return fail(req, "400 Bad Request", "no network name");
+  xSemaphoreTake(g_mux, portMAX_DELAY);
+  g_pending_ssid = ssid;
+  g_pending_pass = formValue(body, "pass");
+  g_pending_join = true;
+  xSemaphoreGive(g_mux);
+  return ok(req);
+}
+
+esp_err_t handleWifiState(httpd_req_t *req) {
+  const char *st = g_state == State::Connected ? "connected" : g_state == State::Connecting ? "joining"
+                   : g_state == State::Failed ? "failed" : "off";
+  std::string j = std::string("{\"state\":\"") + st + "\",\"ssid\":" + jsonStr(g_ssid) +
+                  ",\"ip\":" + jsonStr(ip()) + ",\"portal\":" + (g_portal ? "true" : "false") + "}";
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, j.c_str());
+}
+
 void startServer() {
   if (g_server) return;
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
   cfg.stack_size = 8192;
-  cfg.max_uri_handlers = 12;
+  cfg.max_uri_handlers = 20;
   cfg.lru_purge_enable = true;
   cfg.recv_wait_timeout = 20;
   cfg.send_wait_timeout = 20;
@@ -224,7 +334,10 @@ void startServer() {
     httpd_method_t method;
     esp_err_t (*fn)(httpd_req_t *);
   } routes[] = {
-      {"/", HTTP_GET, handlePage},           {"/api/state", HTTP_GET, handleState},
+      {"/", HTTP_GET, handleRoot},           {"/files", HTTP_GET, handlePage},
+      {"/setup", HTTP_GET, handleSetup},     {"/api/nets", HTTP_GET, handleNets},
+      {"/api/wifi", HTTP_POST, handleWifi},  {"/api/wifistate", HTTP_GET, handleWifiState},
+      {"/api/state", HTTP_GET, handleState},
       {"/api/list", HTTP_GET, handleList},   {"/api/get", HTTP_GET, handleGet},
       {"/api/put", HTTP_PUT, handlePut},     {"/api/delete", HTTP_POST, handleDelete},
       {"/api/mkdir", HTTP_POST, handleMkdir}, {"/api/rename", HTTP_POST, handleRename},
@@ -237,6 +350,32 @@ void startServer() {
     u.handler = r.fn;
     httpd_register_uri_handler(g_server, &u);
   }
+  httpd_register_err_handler(g_server, HTTPD_404_NOT_FOUND, handleNotFound);
+}
+
+void startPortal() {
+  if (g_portal) return;
+  // AP+STA: the station side scans, and joins once a network is chosen.
+  WiFi.disconnect(false);   // stop retrying a network that is not there
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAPConfig(kApIp, kApIp, IPAddress(255, 255, 255, 0));
+  WiFi.softAP(g_ap.c_str());
+  g_dns.setErrorReplyCode(DNSReplyCode::NoError);
+  g_dns.start(53, "*", kApIp);
+  startServer();
+  g_portal = true;
+  g_portal_close_ms = 0;
+  g_nets = doScan();
+  runner::note("Wi-Fi setup: join the open network %s from a phone (N shows a QR code)", g_ap.c_str());
+}
+
+void stopPortal() {
+  if (!g_portal) return;
+  g_dns.stop();
+  WiFi.softAPdisconnect(false);   // the hotspot only; the radio cannot be restarted
+  WiFi.mode(WIFI_STA);
+  g_portal = false;
+  runner::note("Wi-Fi setup hotspot closed");
 }
 
 void connect(const std::string &ssid, const std::string &pass) {
@@ -250,31 +389,54 @@ void connect(const std::string &ssid, const std::string &pass) {
 
 void begin() {
   g_mux = xSemaphoreCreateMutex();
-  auto &s = settings::get();
-  std::string ssid = s.wifi_ssid, pass = s.wifi_pass;
-#ifdef WIFI_SSID
-  if (ssid.empty()) {
-    ssid = WIFI_SSID;
-    pass = WIFI_PASSWORD;
-  }
-#endif
-  if (ssid.empty()) return;
   WiFi.mode(WIFI_STA);
+  // "T48-Burner-" and two bytes of the P4's factory MAC, so two Tab5s
+  // differ. (The Wi-Fi MAC comes from the C6 and read as zeros here.)
+  const uint64_t mac = ESP.getEfuseMac();
+  char ap[32];
+  snprintf(ap, sizeof(ap), "T48-Burner-%02X%02X", (unsigned)((mac >> 32) & 0xFF), (unsigned)((mac >> 40) & 0xFF));
+  g_ap = ap;
   WiFi.setHostname("t48burner");
-  connect(ssid, pass);
+  auto &s = settings::get();
+  if (s.wifi_ssid.empty()) {
+    startPortal();   // nothing saved: set it up from a phone
+    return;
+  }
+  connect(s.wifi_ssid, s.wifi_pass);
 }
 
 void loop() {
+  if (g_portal) g_dns.processNextRequest();
+
+  // Requests from the setup page, applied here: this loop owns the radio.
+  xSemaphoreTake(g_mux, portMAX_DELAY);
+  const bool want_join = g_pending_join, want_scan = g_want_scan;
+  const std::string ps = g_pending_ssid, pp = g_pending_pass;
+  g_pending_join = false;
+  xSemaphoreGive(g_mux);
+  if (want_scan) {
+    auto n = doScan();
+    xSemaphoreTake(g_mux, portMAX_DELAY);
+    g_nets = n;
+    g_want_scan = false;
+    xSemaphoreGive(g_mux);
+  }
+  if (want_join) join(ps, pp);
+
   if (g_state == State::Connecting) {
     if (WiFi.status() == WL_CONNECTED) {
       g_state = State::Connected;
       startServer();
       runner::note("Wi-Fi: joined %s, files at http://%s/", g_ssid.c_str(), WiFi.localIP().toString().c_str());
+      // Leave the hotspot up long enough for the phone to show the result.
+      if (g_portal) g_portal_close_ms = millis() + 60000;
     } else if (millis() - g_join_ms > 20000) {
       g_state = State::Failed;
       runner::note("Wi-Fi: could not join %s", g_ssid.c_str());
+      startPortal();
     }
-  } else if (g_state == State::Connected && WiFi.status() != WL_CONNECTED) {
+  }
+  if (g_portal && g_portal_close_ms && (int32_t)(millis() - g_portal_close_ms) >= 0) stopPortal(); else if (g_state == State::Connected && WiFi.status() != WL_CONNECTED) {
     // Dropped: the stack reconnects by itself; show it as joining meanwhile.
     g_state = State::Connecting;
     g_join_ms = millis();
@@ -286,6 +448,7 @@ std::string ssid() { return g_ssid; }
 std::string ip() { return g_state == State::Connected ? WiFi.localIP().toString().c_str() : ""; }
 
 std::string statusText() {
+  if (g_portal && g_state != State::Connected) return "setup: " + g_ap;
   switch (g_state) {
     case State::Off: return "off";
     case State::Connecting: return "joining...";
@@ -300,14 +463,28 @@ void join(const std::string &ssid, const std::string &pass) {
   s.wifi_ssid = ssid;
   s.wifi_pass = pass;
   settings::save();
-  if (g_state == State::Off) WiFi.mode(WIFI_STA);
+  if (g_state == State::Off && !g_portal) WiFi.mode(WIFI_STA);
   else WiFi.disconnect(false);   // not the radio: it cannot be restarted
   connect(ssid, pass);
 }
 
-std::vector<Net> scan() {
+void forget() {
+  auto &s = settings::get();
+  s.wifi_ssid.clear();
+  s.wifi_pass.clear();
+  settings::save();
+}
+
+bool portalActive() { return g_portal; }
+std::string portalSsid() { return g_ap; }
+void setupFromPhone() { startPortal(); }
+
+std::vector<Net> scan() { return doScan(); }
+
+namespace {
+std::vector<Net> doScan() {
   std::vector<Net> out;
-  if (g_state == State::Off) WiFi.mode(WIFI_STA);
+  if (g_state == State::Off && !g_portal) WiFi.mode(WIFI_STA);
   const int n = WiFi.scanNetworks();
   for (int i = 0; i < n; i++) {
     const std::string s = WiFi.SSID(i).c_str();
@@ -320,6 +497,7 @@ std::vector<Net> scan() {
   std::sort(out.begin(), out.end(), [](const Net &a, const Net &b) { return a.rssi > b.rssi; });
   return out;
 }
+}  // namespace
 
 bool takeChosenImage(std::string *path) {
   xSemaphoreTake(g_mux, portMAX_DELAY);

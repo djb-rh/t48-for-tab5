@@ -10,6 +10,8 @@
 //   key <text>            typed keys; {enter} {esc} {tab} {bs} {del} {up}
 //                         {down} {left} {right} {pgup} {pgdn} {home} {end},
 //                         {^x} for Ctrl+x
+//   wifi <ssid> [pass]   join and remember a network; 'wifi forget' clears it
+//   memlog [off]         print memory every 2 s
 //   mem                   free internal / DMA / PSRAM memory
 //   sdformat ERASE        format the card (FAT); erases it
 //   reboot
@@ -20,6 +22,7 @@
 #include <M5Unified.h>
 #include <dirent.h>
 #include <lgfx/v1/platforms/esp32p4/Panel_DSI.hpp>
+#include <esp_log.h>
 #include <esp_rom_crc.h>
 #include <sys/stat.h>
 
@@ -30,6 +33,7 @@
 #include "keyboard.h"
 #include "runner.h"
 #include "sdcard.h"
+#include "web.h"
 #include "ui.h"
 
 namespace burner {
@@ -160,7 +164,9 @@ int cmdShot() {
   const uint8_t rot = (uint8_t)M5.Display.getRotation();
   const int pw = panel->config().panel_width, ph = panel->config().panel_height;
   const int w = (rot & 1) ? ph : pw, h = (rot & 1) ? pw : ph;
-  // The host is reading; a dropped byte ruins the picture, so wait long.
+  // The host is reading; a dropped byte ruins the picture, so wait long, and
+  // keep ESP-IDF's own log lines (the Wi-Fi stack's) out of the stream.
+  esp_log_level_set("*", ESP_LOG_NONE);
   Serial.setTxTimeoutMs(10000);
   Serial.printf("SHOT %d %d\n", w, h);
   static uint16_t *row = (uint16_t *)heap_caps_malloc(1280 * 2, MALLOC_CAP_SPIRAM);
@@ -180,6 +186,7 @@ int cmdShot() {
   Serial.flush();
   Serial.println("ENDSHOT");
   Serial.setTxTimeoutMs(0);
+  esp_log_level_set("*", ESP_LOG_NONE);
   return 0;
 }
 
@@ -220,6 +227,15 @@ int cmdKey(const std::string &text) {
 }
 
 std::string g_line;
+bool g_memlog = false;
+
+void memLine() {
+  Serial.printf("mem: internal %u KB free, largest %u KB; dma %u KB free, largest %u KB; wifi %d\n",
+                (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
+                (unsigned)(heap_caps_get_free_size(MALLOC_CAP_DMA) / 1024),
+                (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_DMA) / 1024), (int)web::state());
+}
 
 void run(const std::string &line) {
   const auto a = split(line);
@@ -252,6 +268,16 @@ void run(const std::string &line) {
     Serial.printf("sdformat: %s, %llu MB\n", ok ? "mounted" : "FAILED", (unsigned long long)sdcard::cardMB());
     return done(ok ? 0 : 1);
   }
+  if (c == "wifi" && a.size() > 1) {
+    // Tests only; the real way is the setup hotspot or the N screen.
+    if (a[1] == "forget") web::forget();
+    else web::join(a[1], a.size() > 2 ? a[2] : "");
+    return done(0);
+  }
+  if (c == "memlog") {
+    g_memlog = a.size() < 2 || a[1] != "off";
+    return done(0);
+  }
   if (c == "mem") {
     // Internal (DMA-capable) RAM is what the Wi-Fi transport runs short of:
     // with 4 KB left in one piece, uploads stalled and the network died.
@@ -276,6 +302,11 @@ void run(const std::string &line) {
 }  // namespace
 
 void poll() {
+  static uint32_t mem_ms = 0;
+  if (g_memlog && millis() - mem_ms > 2000) {
+    mem_ms = millis();
+    memLine();
+  }
   while (Serial.available()) {
     const char ch = Serial.read();
     if (ch == '\n' || ch == '\r') {

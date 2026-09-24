@@ -8,6 +8,7 @@
 
 #include <M5Unified.h>
 #include <SD_MMC.h>
+#include <esp_log.h>
 
 #include "../core/usb_esp.h"
 #include "app.h"
@@ -65,6 +66,10 @@ void setup() {
   Serial.setRxBufferSize(16384);   // console 'put' streams 4 KB at a time
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0);        // never block on a USB-serial nobody reads
+  // ESP-IDF's own log lines (the Wi-Fi stack's) go to the same USB serial
+  // port and are not covered by the timeout above; with the Mac attached but
+  // nothing reading, they were the suspect in uploads killing the network.
+  esp_log_level_set("*", ESP_LOG_NONE);
   M5.Display.setRotation(3);
   M5.Display.setBrightness(180);
   splash("Starting...");
