@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>T48 for Tab5 installer</title>
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;--dim:#8b949e;--accent:#2f81f7}
+@media (prefers-color-scheme:light){:root{--bg:#f6f8fa;--panel:#fff;--border:#d0d7de;--text:#1f2328;--dim:#59636e;--accent:#0969da}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:760px;margin:0 auto;padding:28px 16px 48px}h1{margin:0 0 4px;font-size:28px}h2{font-size:19px;margin:28px 0 8px}
+p,li{color:var(--dim)}b,strong{color:var(--text)}a{color:var(--accent)}img{width:100%;border-radius:10px;border:1px solid var(--border);margin:14px 0}
+.box{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:18px 0}
+ol{padding-left:22px}li{margin:6px 0}code{background:var(--panel);border:1px solid var(--border);border-radius:5px;padding:1px 5px;color:var(--text)}
+esp-web-install-button{--esp-tools-button-color:#2f81f7;--esp-tools-button-border-radius:8px}
+</style></head><body><main>
+<h1>T48 for Tab5</h1>
+<p>Firmware v1.0: an M5Stack Tab5 and its keyboard as a stand-alone programmer for an XGecu T48.
+Source, docs and licence (GPL-3.0) on <a href="https://github.com/djb-rh/t48-for-tab5">GitHub</a>.</p>
+<img src="main.png" alt="The main screen">
+
+<h2>1. Install the firmware</h2>
+<div class="box">
+<ol>
+<li>Use <b>Chrome or Edge on a desktop</b> (Web Serial is needed; Safari and Firefox do not have it).</li>
+<li>Connect the Tab5's <b>USB-C</b> port to the computer and switch the Tab5 on.</li>
+<li>Click Install and choose the Tab5's port (it is usually called <b>USB JTAG/serial debug unit</b>).</li>
+</ol>
+<esp-web-install-button manifest="manifest.json">
+<span slot="unsupported"><b>This browser cannot flash devices.</b> Use Chrome or Edge on a desktop computer.</span>
+<span slot="not-allowed"><b>The page must be opened over https.</b></span>
+</esp-web-install-button>
+<p>If no port shows up or the install fails: hold the Tab5's power button to put it in download mode, then try again.
+Installing replaces whatever firmware the Tab5 had.</p>
+</div>
+
+<h2>2. Prepare the SD card</h2>
+<div class="box"><ol>
+<li>Download <a href="https://github.com/djb-rh/t48-for-tab5/releases/latest">the SD card zip</a> from the latest release
+(<code>t48-for-tab5-sdcard-v1.0.zip</code>).</li>
+<li>Format a microSD card as <b>FAT32</b> (the Tab5 cannot read exFAT; cards over 32 GB usually come as exFAT).</li>
+<li>Unzip it onto the card so the card has a <code>burner</code> folder at its top level, and put the card in the Tab5.</li>
+</ol></div>
+
+<h2>3. Connect and set up</h2>
+<div class="box"><ol>
+<li>Clip on the Tab5 Keyboard, plug the T48 into the Tab5's <b>USB-A</b> port, and restart the Tab5.</li>
+<li>Wi-Fi: the first time, the Tab5 opens a <b>T48-for-Tab5-XXXX</b> hotspot. Join it from a phone (press <b>N</b> on the
+Tab5 for a QR code); the setup page opens by itself. Pick your network and type its password.</li>
+<li>Press <b>P</b> to choose a chip, then B, R, W, V for blank check, read, write and verify. Upload ROM images from a browser
+at the address shown in the Tab5's header.</li>
+</ol></div>
+</main></body></html>
