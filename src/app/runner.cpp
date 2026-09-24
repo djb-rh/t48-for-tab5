@@ -1,9 +1,11 @@
 #include "runner.h"
 
+#include <esp_heap_caps.h>
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <freertos/idf_additions.h>
 
 #include <cstdarg>
 #include <cstdio>
@@ -138,8 +140,10 @@ void task(void *) {
 
 void begin() {
   g_mux = xSemaphoreCreateMutex();
-  // minipro's main() keeps PATH_MAX buffers and the like on the stack.
-  xTaskCreatePinnedToCore(task, "minipro", 48 * 1024, nullptr, 3, nullptr, 1);
+  // minipro's main() keeps PATH_MAX buffers and the like on the stack. The
+  // stack is in PSRAM: internal RAM is what the Wi-Fi transport runs out of
+  // (uploads stalled for good with 4 KB of DMA memory left in one piece).
+  xTaskCreatePinnedToCoreWithCaps(task, "minipro", 48 * 1024, nullptr, 3, nullptr, 1, MALLOC_CAP_SPIRAM);
 }
 
 bool start(const std::vector<std::string> &args, const char *title) {

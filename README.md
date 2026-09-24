@@ -6,6 +6,49 @@ the programmer layer of [minipro](https://gitlab.com/DavidGriffith/minipro)
 (GPL-3.0-or-later) and put a touch + keyboard UI on it: part search, blank
 check, read, write, verify, a hex editor, and a web file manager for the SD card.
 
+## The app (`pio run -e app -t upload`, the default env)
+
+Tab5 + keyboard + T48 on USB-A + SD card. Everything lives under
+`/sdcard/burner` on a **FAT32** card (the prebuilt ESP-IDF has exFAT off; the
+console's `sdformat ERASE` formats one, erasing it):
+
+    burner/db/      the part library, built on the Mac by tools/mkparts.py
+    burner/sel/     minipro's one-part database for the chosen chip
+    burner/images/  ROM images: reads land here, writes come from here
+
+Main screen keys: P choose chip (type to search 30,043 T48 parts), D chip
+info, F choose image, H hex editor, B blank check, R read, W write, V verify,
+E erase, I chip ID, T logic test (logic parts), 1-4 write options (size
+mismatch OK / skip erase / skip verify / ignore ID mismatch), N Wi-Fi.
+Everything is also a touch button. Battery charging pauses during every job.
+
+Hex editor: arrows, PgUp/PgDn, Home/End, Ctrl+Home/End; type hex (or text
+on the ASCII side, Tab switches); Ctrl+G go to, Ctrl+F find (hex bytes or
+"text"), Ctrl+N next, Ctrl+Z undo, Ctrl+S save, Ctrl+A save as, Esc close.
+Changed bytes are orange; the status line shows the CRC32.
+
+Wi-Fi: joins the saved network (first boot: include/secrets.h, gitignored)
+and serves a file manager at http://<ip>/ for /burner: upload (drag and
+drop), download, rename, delete, folders, and "Burn this" to make a file the
+current image. ~300 KB/s up. The N screen scans and switches networks.
+
+Updating the part library: `python3 tools/mkparts.py third_party/minipro
+sd/burner/db`, upload the four files to burner/db in the browser, restart.
+
+Testing without touching the Tab5: `tools/tab5.py` runs one serial session
+(the port open resets the board) of console commands, `--key=`, `--tap=`,
+`--shot=`, `--put=`, `--get=`; `tools/monitor.py` just listens.
+
+### Lessons
+- **Internal RAM feeds the Wi-Fi transport.** With minipro's 48 KB stack and
+  a few 16 KB buffers in internal RAM, an upload left 4 KB of DMA memory in
+  one piece and the network died for good. Big buffers and that stack live
+  in PSRAM now (153 KB of DMA memory free at boot); `mem` shows it.
+- minipro takes the part database from `--infoic/--logicic`; a one-part file
+  parses in milliseconds where the full 19 MB XML would take seconds.
+- Reads run at the Mac's speed (375 ms for 64 KB) once nothing redraws the
+  screen from inside minipro's output path.
+
 ## Phase 0 spike (`pio run -e spike -t upload`)
 
 Proves the hardware path. Result on 2026-09-24:

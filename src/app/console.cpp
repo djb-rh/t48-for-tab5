@@ -10,10 +10,13 @@
 //   key <text>            typed keys; {enter} {esc} {tab} {bs} {del} {up}
 //                         {down} {left} {right} {pgup} {pgdn} {home} {end},
 //                         {^x} for Ctrl+x
+//   mem                   free internal / DMA / PSRAM memory
+//   sdformat ERASE        format the card (FAT); erases it
 //   reboot
 
 #include "console.h"
 
+#include <esp_heap_caps.h>
 #include <M5Unified.h>
 #include <dirent.h>
 #include <lgfx/v1/platforms/esp32p4/Panel_DSI.hpp>
@@ -67,10 +70,10 @@ int cmdLs(const std::string &dir) {
 int cmdCrc(const std::string &path) {
   FILE *f = fopen(path.c_str(), "rb");
   if (!f) return 1;
-  static uint8_t buf[16384];
+  static uint8_t *buf = (uint8_t *)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
   uint32_t crc = 0, size = 0;
   size_t n;
-  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+  while ((n = fread(buf, 1, 16384, f)) > 0) {
     crc = esp_rom_crc32_le(crc, buf, n);
     size += n;
   }
@@ -114,13 +117,13 @@ int cmdPut(const std::string &path, long size) {
   const std::string tmp = path + ".part";
   FILE *f = fopen(tmp.c_str(), "wb");
   if (!f) return 1;
-  static uint8_t buf[4096];
+  static uint8_t *buf = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
   long left = size;
   uint32_t crc = 0;
   Serial.setTxTimeoutMs(1000);
   Serial.println("put: ready");
   while (left > 0) {
-    const int want = left < (long)sizeof(buf) ? (int)left : (int)sizeof(buf);
+    const int want = left < 4096 ? (int)left : 4096;
     int got = 0;
     const uint32_t t0 = millis();
     while (got < want && millis() - t0 < 5000) {
@@ -160,7 +163,7 @@ int cmdShot() {
   // The host is reading; a dropped byte ruins the picture, so wait long.
   Serial.setTxTimeoutMs(10000);
   Serial.printf("SHOT %d %d\n", w, h);
-  static uint16_t row[1280];
+  static uint16_t *row = (uint16_t *)heap_caps_malloc(1280 * 2, MALLOC_CAP_SPIRAM);
   for (int y = 0; y < h; y++) {
     for (int x = 0; x < w; x++) {
       size_t prow, pcol;
@@ -248,6 +251,17 @@ void run(const std::string &line) {
     const bool ok = sdcard::format();
     Serial.printf("sdformat: %s, %llu MB\n", ok ? "mounted" : "FAILED", (unsigned long long)sdcard::cardMB());
     return done(ok ? 0 : 1);
+  }
+  if (c == "mem") {
+    // Internal (DMA-capable) RAM is what the Wi-Fi transport runs short of:
+    // with 4 KB left in one piece, uploads stalled and the network died.
+    Serial.printf("internal %u KB free, largest %u KB; dma %u KB free, largest %u KB; psram %u KB free\n",
+                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                  (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
+                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_DMA) / 1024),
+                  (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_DMA) / 1024),
+                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+    return done(0);
   }
   if (c == "reboot") {
     done(0);

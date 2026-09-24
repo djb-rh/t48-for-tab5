@@ -1,6 +1,7 @@
 // The main screen, the chip and file pickers, and the two small dialogs.
 // The hex editor is in hexedit.cpp, Wi-Fi in wifi_screen.cpp.
 
+#include <esp_heap_caps.h>
 #include <dirent.h>
 #include <esp_rom_crc.h>
 #include <sys/stat.h>
@@ -871,10 +872,11 @@ uint32_t crcFile(const std::string &path, uint32_t *size, bool *ok) {
   *size = 0;
   FILE *f = fopen(path.c_str(), "rb");
   if (!f) return 0;
-  static uint8_t buf[16384];
+  // PSRAM: internal RAM is what the Wi-Fi transport needs.
+  static uint8_t *buf = (uint8_t *)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
   uint32_t crc = 0;
   size_t n;
-  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+  while ((n = fread(buf, 1, 16384, f)) > 0) {
     crc = esp_rom_crc32_le(crc, buf, n);
     *size += n;
   }

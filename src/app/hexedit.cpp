@@ -152,7 +152,7 @@ class HexScreen : public Screen {
                       : -1;
     if (v < 0) return;
     const uint8_t old = data_[pos_];
-    set(pos_, nibble_ == 0 ? (uint8_t)((v << 4) | (old & 0x0F)) : (uint8_t)((old & 0xF0) | v));
+    set(pos_, nibble_ == 0 ? (uint8_t)((v << 4) | (old & 0x0F)) : (uint8_t)((old & 0xF0) | v), nibble_ == 1);
     if (nibble_ == 0) {
       nibble_ = 1;
       refreshCursor(pos_);
@@ -228,9 +228,10 @@ class HexScreen : public Screen {
 
   bool isDirty(uint32_t p) const { return dirty_[p >> 3] & (1 << (p & 7)); }
 
-  void set(uint32_t p, uint8_t v) {
+  // The second hex digit of a byte is part of the same edit: one undo step.
+  void set(uint32_t p, uint8_t v, bool same_edit = false) {
     if (data_[p] == v) return;
-    undo_.push_back({p, data_[p]});
+    if (!(same_edit && !undo_.empty() && undo_.back().first == p)) undo_.push_back({p, data_[p]});
     data_[p] = v;
     dirty_[p >> 3] |= 1 << (p & 7);
     crc_valid_ = false;

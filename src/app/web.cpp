@@ -1,5 +1,6 @@
 #include "web.h"
 
+#include <esp_heap_caps.h>
 #include <WiFi.h>
 #include <dirent.h>
 #include <esp_http_server.h>
@@ -133,9 +134,9 @@ esp_err_t handleGet(httpd_req_t *req) {
   FILE *f = fopen(path.c_str(), "rb");
   if (!f) return fail(req, "404 Not Found", "no such file");
   httpd_resp_set_type(req, "application/octet-stream");
-  static char buf[8192];
+  static char *buf = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
   size_t n;
-  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+  while ((n = fread(buf, 1, 8192, f)) > 0) {
     if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
       fclose(f);
       return ESP_FAIL;
@@ -152,10 +153,10 @@ esp_err_t handlePut(httpd_req_t *req) {
   const std::string tmp = path + ".part";
   FILE *f = fopen(tmp.c_str(), "wb");
   if (!f) return fail(req, "500 Internal Server Error", "cannot create the file");
-  static char buf[16384];
+  static char *buf = (char *)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
   int left = req->content_len;
   while (left > 0) {
-    const int n = httpd_req_recv(req, buf, left < (int)sizeof(buf) ? left : (int)sizeof(buf));
+    const int n = httpd_req_recv(req, buf, left < 16384 ? left : 16384);
     if (n == HTTPD_SOCK_ERR_TIMEOUT) continue;
     if (n <= 0 || fwrite(buf, 1, n, f) != (size_t)n) {
       fclose(f);
