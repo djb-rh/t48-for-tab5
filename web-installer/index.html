@@ -11,7 +11,8 @@ main{max-width:760px;margin:0 auto;padding:28px 16px 48px}h1{margin:0 0 4px;font
 p,li{color:var(--dim)}b,strong{color:var(--text)}a{color:var(--accent)}img{width:100%;border-radius:10px;border:1px solid var(--border);margin:14px 0}
 .box{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:18px 0}
 ol{padding-left:22px}li{margin:6px 0}code{background:var(--panel);border:1px solid var(--border);border-radius:5px;padding:1px 5px;color:var(--text)}
-esp-web-install-button{--esp-tools-button-color:#2f81f7;--esp-tools-button-border-radius:8px}
+button.install{background:#2f81f7;color:#fff;border:0;border-radius:8px;padding:12px 22px;font:600 17px system-ui,sans-serif;cursor:pointer;margin:8px 0 4px}
+button.install:hover{filter:brightness(1.1)}
 </style></head><body><main>
 <h1>T48 for Tab5</h1>
 <p>Firmware @VER@: an M5Stack Tab5 and its keyboard as a stand-alone programmer for an XGecu T48.
@@ -23,9 +24,10 @@ Source, docs and licence (GPL-3.0) on <a href="https://github.com/djb-rh/t48-for
 <ol>
 <li>Use <b>Chrome or Edge on a desktop</b> (Web Serial is needed; Safari and Firefox do not have it).</li>
 <li>Connect the Tab5's <b>USB-C</b> port to the computer and switch the Tab5 on.</li>
-<li>Click Install and choose the Tab5's port (it is usually called <b>USB JTAG/serial debug unit</b>).</li>
+<li>Click <b>Install</b> below and choose the Tab5's port (it is usually called <b>USB JTAG/serial debug unit</b>).</li>
 </ol>
 <esp-web-install-button manifest="manifest.json">
+<button slot="activate" class="install">Install T48 for Tab5 @VER@</button>
 <span slot="unsupported"><b>This browser cannot flash devices.</b> Use Chrome or Edge on a desktop computer.</span>
 <span slot="not-allowed"><b>The page must be opened over https.</b></span>
 </esp-web-install-button>

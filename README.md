@@ -49,6 +49,16 @@ browned the Tab5 out on a laptop port.
 
 Tested with T48 firmware 00.1.03 and 00.1.39 (the one minipro expects).
 
+## Installing without building anything
+
+Open the **[web installer](https://djb-rh.github.io/t48-for-tab5/)** in Chrome
+or Edge on a desktop, connect the Tab5's USB-C port and click Install. Then
+unzip `t48-for-tab5-sdcard-<version>.zip` from the
+[latest release](https://github.com/djb-rh/t48-for-tab5/releases/latest) onto a
+FAT32 microSD card. The release also has the merged firmware image
+(`t48-for-tab5-<version>.bin`, written at offset 0) for esptool or any other
+flasher.
+
 ## Building and flashing
 
 [PlatformIO](https://platformio.org/) with the pioarduino platform (in
@@ -107,6 +117,8 @@ Wi-Fi, and at `http://192.168.4.1/files` over the setup hotspot.
   host stack in place of minipro's libusb file) and minipro's `main()`
   renamed so it can be called with an argv. `src/spike` and `src/chiptest`
   are the bring-up steps (`pio run -e spike`, `-e chiptest`).
+- `tools/release.sh <version>` builds the release files into `dist/` and the
+  web installer into `site/`, which is what the `gh-pages` branch serves.
 - `tools/tab5.py` drives one serial session (opening the port resets the
   Tab5): console commands, `--key=`, `--tap=`, `--shot=` screenshots,
   `--put=`/`--get=` files. `tools/monitor.py` only listens. The console's
