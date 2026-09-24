@@ -27,7 +27,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
-#include "usb_esp.h"
+#include "../core/usb_esp.h"
 
 extern "C" int minipro_main(int argc, char **argv);
 extern "C" int optind, opterr;

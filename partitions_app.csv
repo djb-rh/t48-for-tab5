@@ -1,0 +1,7 @@
+# App layout: one 6 MB app slot. Everything ends at 0x610000, inside what is
+# Tabulous5's app slot on the same Tab5, so Tabulous5's LittleFS (from
+# 0x610000) is never touched and reflashing Tabulous5 puts it all back.
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x5000,
+phy_init, data, phy,     0xe000,   0x1000,
+factory,  app,  factory, 0x10000,  0x600000,
