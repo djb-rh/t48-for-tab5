@@ -18,8 +18,11 @@ Proves the hardware path. Result on 2026-09-24:
   (payload), all 512-byte packets. It asks for 100 mA.
 - minipro's "get system info" (5 zero bytes out on EP 01, reply on EP 81)
   comes back in ~20 ms: firmware 00.1.03, type 7 (T48), link 480 Mbps.
-- The T48 reports its supply as **4.36-4.38 V** (Tab5 on USB-C from a Mac).
-  Needs comparing with `minipro -k` on the Mac.
+- The T48's own supply reading (`minipro --version` prints it) is 5.18 V on
+  the Mac. On the Tab5 (USB-C from the Mac) it is **4.37 V while the battery
+  charges (~695 mA) and 4.97 V with charging off**, repeatably
+  (`tools/charge_test.py`, serial `c` toggles CHG_EN). So the burner pauses
+  charging (`M5.Power.setBatteryCharge(false)`) for any chip operation.
 
 The spike's status line shows the T48's supply reading and the INA226
 battery current live, so it can be watched on battery. Tap the screen for the

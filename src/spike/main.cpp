@@ -10,7 +10,8 @@
 //   4. What does it cost in current? Logged from the INA226 once a second.
 //
 // Tap the screen for the full system info again. Serial commands: i = same, p = toggle root port power,
-// u = toggle the USB-A 5 V rail, d = dump descriptors again.
+// u = toggle the USB-A 5 V rail, d = dump descriptors again, c = toggle battery
+// charging (to see whether charging is what pulls the rail down on USB-C).
 
 #include <M5Unified.h>
 #include <freertos/FreeRTOS.h>
@@ -91,6 +92,7 @@ volatile bool g_gone = false;
 volatile char g_cmd = 0;   // from loop() to the client task
 bool g_port_on = false;
 bool g_rail_on = false;
+bool g_charge_on = true;   // M5.begin leaves the charger enabled
 
 const char *speedName(usb_speed_t s) {
   switch (s) {
@@ -370,6 +372,11 @@ void clientTask(void *) {
         case 'd': if (g_dev) dumpDescriptors(); break;
         case 'p': if (!g_port_on) setPort(true); else { closeDevice(); setPort(false); } break;
         case 'u': setRail(!g_rail_on); break;
+        case 'c':
+          g_charge_on = !g_charge_on;
+          M5.Power.setBatteryCharge(g_charge_on);   // CHG_EN on the IP2326
+          logf("battery charging %s", g_charge_on ? "on" : "off");
+          break;
         default: break;
       }
     }
