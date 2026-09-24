@@ -1,0 +1,12 @@
+{
+  "name": "T48 for Tab5",
+  "version": "@VER@",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32-P4",
+      "parts": [{ "path": "t48-for-tab5-@VER@.bin", "offset": 0 }]
+    }
+  ]
+}

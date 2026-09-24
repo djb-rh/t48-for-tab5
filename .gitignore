@@ -4,3 +4,5 @@ __pycache__/
 scratch/
 include/secrets.h
 sd/
+dist/
+site/
