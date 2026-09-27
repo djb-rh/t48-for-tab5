@@ -37,6 +37,9 @@ struct Status {
 Status &status();
 
 void goMain();
+// True when a restart would lose nothing: no job running and the main screen
+// showing (not the hex editor, a dialog or a picker).
+bool idleOnMain();
 void goParts();
 void goFiles();
 void goHex();

@@ -978,6 +978,7 @@ bool setPart(int row, std::string *why) {
 Status &status() { return g_status; }
 
 void goMain() { show(&g_main); }
+bool idleOnMain() { return current() == &g_main && !runner::busy(); }
 void goParts() {
   g_parts.enter();
   show(&g_parts);

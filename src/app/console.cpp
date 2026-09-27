@@ -271,6 +271,7 @@ void run(const std::string &line) {
   if (c == "wifi" && a.size() > 1) {
     // Tests only; the real way is the setup hotspot or the N screen.
     if (a[1] == "forget") web::forget();
+    else if (a[1] == "reconnect") web::reconnect();
     else web::join(a[1], a.size() > 2 ? a[2] : "");
     return done(0);
   }

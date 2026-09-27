@@ -2,7 +2,12 @@
 
 #include <esp_heap_caps.h>
 #include <DNSServer.h>
+#include <ESP_HostedOTA.h>
 #include <WiFi.h>
+#include <esp32-hal-hosted.h>
+#include <esp_attr.h>
+#include <lwip/ip_addr.h>
+#include <ping/ping_sock.h>
 #include <dirent.h>
 #include <esp_http_server.h>
 #include <freertos/FreeRTOS.h>
@@ -30,6 +35,7 @@ constexpr const char *kCard = "/sdcard";
 constexpr const char *kTop = "/burner";
 
 State g_state = State::Off;
+bool g_ever_connected = false;   // joined the saved network at least once this boot
 std::string g_ssid;
 uint32_t g_join_ms = 0;
 httpd_handle_t g_server = nullptr;
@@ -48,6 +54,98 @@ bool g_pending_join = false;
 const IPAddress kApIp(192, 168, 4, 1);
 
 std::vector<Net> doScan();
+
+// ---- link watchdog ------------------------------------------------------------
+//
+// The link to the router can die while the station still reports itself
+// connected (seen after scans, during uploads and while idle), and nothing
+// on the P4 notices. So the router is pinged every 10 s; 30 s of silence
+// means restart (only when a restart loses nothing: the rejoin that was tried
+// first never helped). The counters live in RAM that survives a software
+// restart, so /api/wifistate can say what happened while nobody watched.
+struct WatchCounters {
+  uint32_t magic;
+  uint32_t pings_ok, pings_lost, rejoins, restarts;
+};
+__NOINIT_ATTR WatchCounters g_wc;
+constexpr uint32_t kWcMagic = 0x57A7C4E1;
+
+esp_ping_handle_t g_ping = nullptr;
+volatile uint32_t g_ping_replies = 0;
+volatile bool g_ping_done = false;
+bool g_router_answers = false;     // armed only once the router has answered
+uint32_t g_ping_ms = 0;
+int g_silent_checks = 0;
+uint32_t g_rejoin_ms = 0;          // when the last rejoin started (0: none pending)
+
+void onPingReply(esp_ping_handle_t, void *) { g_ping_replies++; }
+void onPingEnd(esp_ping_handle_t, void *) { g_ping_done = true; }
+
+void pingRouter() {
+  const IPAddress gw = WiFi.gatewayIP();
+  if (gw == IPAddress(0, 0, 0, 0)) return;
+  esp_ping_config_t c = ESP_PING_DEFAULT_CONFIG();
+  IP_ADDR4(&c.target_addr, gw[0], gw[1], gw[2], gw[3]);
+  c.count = 3;
+  c.interval_ms = 300;
+  c.timeout_ms = 1000;
+  c.task_stack_size = 3072;
+  esp_ping_callbacks_t cb = {};
+  cb.on_ping_success = onPingReply;
+  cb.on_ping_end = onPingEnd;
+  g_ping_replies = 0;
+  g_ping_done = false;
+  if (esp_ping_new_session(&c, &cb, &g_ping) != ESP_OK) {
+    g_ping = nullptr;
+    return;
+  }
+  esp_ping_start(g_ping);
+}
+
+}  // namespace
+void reconnect();
+namespace {
+void watchLink() {
+  if (g_state != State::Connected) {
+    g_silent_checks = 0;
+    return;
+  }
+  if (g_ping) {
+    if (!g_ping_done) return;
+    const bool answered = g_ping_replies > 0;
+    esp_ping_delete_session(g_ping);
+    g_ping = nullptr;
+    if (answered) {
+      g_wc.pings_ok++;
+      g_router_answers = true;
+      g_silent_checks = 0;
+      g_rejoin_ms = 0;
+      return;
+    }
+    g_wc.pings_lost++;
+    if (!g_router_answers) return;   // a router that never answers pings: no watchdog
+    if (++g_silent_checks < 3) return;
+    g_silent_checks = 0;
+    // Rejoining was tried first and never once brought a dead link back
+    // (the C6 or its SDIO link is wedged); a restart, which also resets the
+    // C6, always did. Restart only when that loses nothing; otherwise keep
+    // checking and restart when the user is back on the main screen.
+    if (app::idleOnMain()) {
+      g_wc.restarts++;
+      runner::note("Wi-Fi: the link to the router went silent; restarting to recover");
+      delay(500);
+      ESP.restart();
+    } else if (!g_rejoin_ms) {
+      g_rejoin_ms = millis();
+      runner::note("Wi-Fi: the link went silent; it recovers on the main screen");
+    }
+    return;
+  }
+  if (millis() - g_ping_ms >= 10000) {
+    g_ping_ms = millis();
+    pingRouter();
+  }
+}
 
 std::string query(httpd_req_t *req, const char *key) {
   char q[512];
@@ -166,15 +264,19 @@ esp_err_t handlePut(httpd_req_t *req) {
   if (!f) return fail(req, "500 Internal Server Error", "cannot create the file");
   static char *buf = (char *)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
   int left = req->content_len;
+  int timeouts = 0;
   while (left > 0) {
     const int n = httpd_req_recv(req, buf, left < 16384 ? left : 16384);
-    if (n == HTTPD_SOCK_ERR_TIMEOUT) continue;
+    // A stalled sender (or a dead link) must end the upload: retrying a
+    // timeout forever held the file open at 0 bytes and the server with it.
+    if (n == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) continue;
     if (n <= 0 || fwrite(buf, 1, n, f) != (size_t)n) {
       fclose(f);
       remove(tmp.c_str());
       return fail(req, "500 Internal Server Error", "upload interrupted");
     }
     left -= n;
+    timeouts = 0;
   }
   fclose(f);
   remove(path.c_str());
@@ -310,8 +412,12 @@ esp_err_t handleWifi(httpd_req_t *req) {
 esp_err_t handleWifiState(httpd_req_t *req) {
   const char *st = g_state == State::Connected ? "connected" : g_state == State::Connecting ? "joining"
                    : g_state == State::Failed ? "failed" : "off";
+  char w[160];
+  snprintf(w, sizeof(w), ",\"uptime_s\":%lu,\"pings_ok\":%lu,\"pings_lost\":%lu,\"rejoins\":%lu,\"restarts\":%lu",
+           (unsigned long)(millis() / 1000), (unsigned long)g_wc.pings_ok, (unsigned long)g_wc.pings_lost,
+           (unsigned long)g_wc.rejoins, (unsigned long)g_wc.restarts);
   std::string j = std::string("{\"state\":\"") + st + "\",\"ssid\":" + jsonStr(g_ssid) +
-                  ",\"ip\":" + jsonStr(ip()) + ",\"portal\":" + (g_portal ? "true" : "false") + "}";
+                  ",\"ip\":" + jsonStr(ip()) + ",\"portal\":" + (g_portal ? "true" : "false") + w + "}";
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, j.c_str());
 }
@@ -383,12 +489,20 @@ void connect(const std::string &ssid, const std::string &pass) {
   g_state = State::Connecting;
   g_join_ms = millis();
   WiFi.begin(ssid.c_str(), pass.c_str());
+  // No modem power saving: the C6 napping between beacons is a suspect in
+  // the link dying while idle, and a bench tool has the milliamps to spare.
+  WiFi.setSleep(false);
 }
 
 }  // namespace
 
 void begin() {
   g_mux = xSemaphoreCreateMutex();
+  // Counters survive a software restart; anything else (power on) clears them.
+  if (g_wc.magic != kWcMagic || esp_reset_reason() == ESP_RST_POWERON) {
+    memset(&g_wc, 0, sizeof(g_wc));
+    g_wc.magic = kWcMagic;
+  }
   WiFi.mode(WIFI_STA);
   // "T48-for-Tab5-" and two bytes of the P4's factory MAC, so two Tab5s
   // differ. (The Wi-Fi MAC comes from the C6 and read as zeros here.)
@@ -407,6 +521,14 @@ void begin() {
 
 void loop() {
   if (g_portal) g_dns.processNextRequest();
+  {
+    static int last = -1;
+    const int now = (int)WiFi.status();
+    if (now != last) {
+      Serial.printf("wifi: status %d -> %d, rssi %d\n", last, now, (int)WiFi.RSSI());
+      last = now;
+    }
+  }
 
   // Requests from the setup page, applied here: this loop owns the radio.
   xSemaphoreTake(g_mux, portMAX_DELAY);
@@ -426,21 +548,37 @@ void loop() {
   if (g_state == State::Connecting) {
     if (WiFi.status() == WL_CONNECTED) {
       g_state = State::Connected;
+      g_ever_connected = true;
       startServer();
       runner::note("Wi-Fi: joined %s, files at http://%s/", g_ssid.c_str(), WiFi.localIP().toString().c_str());
+      static bool reported = false;
+      if (!reported) {
+        reported = true;
+        runner::note("Wi-Fi chip firmware %s, this build expects %s%s", coprocVersion().c_str(),
+                     hostVersion().c_str(), coprocUpdateAvailable() ? " (update available: Wi-Fi screen)" : "");
+      }
       // Leave the hotspot up long enough for the phone to show the result.
       if (g_portal) g_portal_close_ms = millis() + 60000;
     } else if (millis() - g_join_ms > 20000) {
-      g_state = State::Failed;
-      runner::note("Wi-Fi: could not join %s", g_ssid.c_str());
-      startPortal();
+      if (g_ever_connected && !g_portal) {
+        // It worked before (router rebooting, out of range): keep trying the
+        // saved network rather than stranding the Tab5 in setup mode.
+        g_join_ms = millis();
+        reconnect();
+      } else {
+        g_state = State::Failed;
+        runner::note("Wi-Fi: could not join %s", g_ssid.c_str());
+        startPortal();
+      }
     }
   }
-  if (g_portal && g_portal_close_ms && (int32_t)(millis() - g_portal_close_ms) >= 0) stopPortal(); else if (g_state == State::Connected && WiFi.status() != WL_CONNECTED) {
+  if (g_state == State::Connected && WiFi.status() != WL_CONNECTED) {
     // Dropped: the stack reconnects by itself; show it as joining meanwhile.
     g_state = State::Connecting;
     g_join_ms = millis();
   }
+  if (g_portal && g_portal_close_ms && (int32_t)(millis() - g_portal_close_ms) >= 0) stopPortal();
+  watchLink();
 }
 
 State state() { return g_state; }
@@ -468,12 +606,40 @@ void join(const std::string &ssid, const std::string &pass) {
   connect(ssid, pass);
 }
 
+void reconnect() {
+  auto &s = settings::get();
+  if (s.wifi_ssid.empty()) return;
+  WiFi.disconnect(false);   // not the radio: it cannot be restarted
+  connect(s.wifi_ssid, s.wifi_pass);
+}
+
 void forget() {
   auto &s = settings::get();
   s.wifi_ssid.clear();
   s.wifi_pass.clear();
   settings::save();
 }
+
+std::string coprocVersion() {
+  uint32_t a = 0, b = 0, c = 0;
+  hostedHasUpdate();   // (re)reads the co-processor's version
+  hostedGetSlaveVersion(&a, &b, &c);
+  char t[24];
+  snprintf(t, sizeof(t), "%lu.%lu.%lu", (unsigned long)a, (unsigned long)b, (unsigned long)c);
+  return t;
+}
+
+std::string hostVersion() {
+  uint32_t a = 0, b = 0, c = 0;
+  hostedGetHostVersion(&a, &b, &c);
+  char t[24];
+  snprintf(t, sizeof(t), "%lu.%lu.%lu", (unsigned long)a, (unsigned long)b, (unsigned long)c);
+  return t;
+}
+
+bool coprocUpdateAvailable() { return hostedHasUpdate(); }
+
+bool updateCoproc() { return updateEspHostedSlave(); }
 
 bool portalActive() { return g_portal; }
 std::string portalSsid() { return g_ap; }

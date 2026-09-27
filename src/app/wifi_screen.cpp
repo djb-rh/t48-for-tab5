@@ -13,7 +13,7 @@ using keyboard::Special;
 
 namespace {
 
-enum { kScan = 1, kOther, kPhone, kBack };
+enum { kScan = 1, kOther, kPhone, kBack, kUpdate };
 
 class WifiScreen : public Screen {
  public:
@@ -28,6 +28,18 @@ class WifiScreen : public Screen {
                                                                     {kOther, "Other network", "O", 330},
                                                                     {kPhone, "Set up from phone", "F", 644},
                                                                     {kBack, "Back", "Esc", 958}};
+    if (web::state() == web::State::Connected && web::coprocUpdateAvailable()) {
+      Button u;
+      u.id = kUpdate;
+      u.x = 900;
+      u.y = 150;
+      u.w = 344;
+      u.h = 56;
+      u.label = "Update Wi-Fi chip";
+      u.key = "U";
+      u.danger = true;
+      buttons_.push_back(u);
+    }
     for (auto &b : bs) {
       Button x;
       x.id = b.id;
@@ -40,6 +52,8 @@ class WifiScreen : public Screen {
       buttons_.push_back(x);
       drawButton(x);
     }
+    for (auto &b : buttons_)
+      if (b.id == kUpdate) drawButton(b);
     drawList();
   }
 
@@ -62,6 +76,7 @@ class WifiScreen : public Screen {
     if (!k.ctrl && (k.ch == 's' || k.ch == 'S')) return doScan();
     if (!k.ctrl && (k.ch == 'o' || k.ch == 'O')) return other();
     if (!k.ctrl && (k.ch == 'f' || k.ch == 'F')) return phone();
+    if (!k.ctrl && (k.ch == 'u' || k.ch == 'U')) return update();
   }
 
   void tap(int x, int y) override {
@@ -69,6 +84,7 @@ class WifiScreen : public Screen {
       case kScan: return doScan();
       case kOther: return other();
       case kPhone: return phone();
+      case kUpdate: return update();
       case kBack: return goMain();
     }
     if (y >= kListY && y < kListY + kRows * kRowH) {
@@ -94,6 +110,10 @@ class WifiScreen : public Screen {
                        : st == web::State::Failed ? "could not join"
                        : web::portalActive() ? "setup hotspot is on" : "off";
     text(36, 110, net + "  (" + what + ")", Font::Body, st == web::State::Failed ? kBad : kText, kPanel);
+    {
+      std::string v = "Wi-Fi chip firmware " + web::coprocVersion() + ", this build expects " + web::hostVersion();
+      text(1244, 88, v, Font::Small, kDim, kPanel, 2);
+    }
     if (st == web::State::Connected) {
       text(36, 150, "Open  http://" + web::ip() + "/  in a browser to upload and download images", Font::Body, kGood,
            kPanel);
@@ -171,6 +191,24 @@ class WifiScreen : public Screen {
     } else {
       askPassword(n.ssid);
     }
+  }
+
+  void update() {
+    if (web::state() != web::State::Connected || !web::coprocUpdateAvailable()) return;
+    confirm("Update the Wi-Fi chip",
+            "Download esp-hosted " + web::hostVersion() + " from Espressif and flash the\nTab5's Wi-Fi chip (now " +
+                web::coprocVersion() + "). Keep the Tab5 powered; it restarts after.",
+            "Update", [this](bool y) {
+              if (!y) return show(this);
+              d().fillScreen(kBg);
+              text(W / 2, 300, "Updating the Wi-Fi chip...", Font::Big, kText, kBg, 1);
+              text(W / 2, 370, "Keep the Tab5 powered. It restarts when done.", Font::Body, kDim, kBg, 1);
+              const bool ok = web::updateCoproc();
+              text(W / 2, 430, ok ? "Done, restarting" : "The update failed; restarting", Font::Body, ok ? kGood : kBad,
+                   kBg, 1);
+              delay(1500);
+              ESP.restart();
+            });
   }
 
   void phone() {
