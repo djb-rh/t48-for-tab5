@@ -14,6 +14,7 @@
 #include "runner.h"
 #include "settings.h"
 #include "ui.h"
+#include "zipx.h"
 
 namespace burner {
 namespace app {
@@ -651,7 +652,7 @@ class FilesScreen : public Screen {
     d().fillRect(0, 0, W, 56, kPanel);
     d().drawFastHLine(0, 56, W, kBorder);
     text(20, 14, "Choose image", Font::Body, kText, kPanel);
-    text(W - 20, 18, "arrows  |  Enter picks  |  Del deletes  |  Esc goes back", Font::Small, kDim, kPanel, 2);
+    text(W - 20, 18, "Enter picks  |  M read me  |  Del deletes  |  Esc goes back", Font::Small, kDim, kPanel, 2);
     std::string where = dir_.substr(strlen("/sdcard/"));
     text(36, 72, where, Font::Body, kDim, kBg);
     drawList();
@@ -670,6 +671,12 @@ class FilesScreen : public Screen {
           return;
         }
         goMain();
+        return;
+      case Special::None:
+        if (!k.ctrl && (k.ch == 'm' || k.ch == 'M')) {
+          const std::string r = findReadme(dir_);
+          if (!r.empty()) goText(r, [this]() { show(this); });
+        }
         return;
       case Special::Delete:
         if (n && !items_[sel_].dir) {
@@ -769,10 +776,46 @@ class FilesScreen : public Screen {
       dir_ += "/" + it.name;
       scan();
       redraw();
+    } else if (isText(it.name)) {
+      goText(dir_ + "/" + it.name, [this]() { show(this); });
+    } else if (zipx::isZip(it.name)) {
+      const std::string zip = dir_ + "/" + it.name, dest = dir_ + "/" + zipx::stem(it.name);
+      confirm("Extract zip", "Extract " + it.name + " into the folder " + zipx::stem(it.name) +
+                                 "/?\nThe zip is removed once everything is out.",
+              "Extract", [this, zip, dest](bool y) {
+                if (y) extract(zip, dest);
+                show(this);
+              });
     } else {
       setImage(dir_ + "/" + it.name);
       goMain();
     }
+  }
+
+  static bool isText(const std::string &n) {
+    auto ends = [&](const char *e) {
+      const size_t l = strlen(e);
+      return n.size() >= l && strcasecmp(n.c_str() + n.size() - l, e) == 0;
+    };
+    return ends(".md") || ends(".txt") || !strcasecmp(n.c_str(), "README");
+  }
+
+  void extract(const std::string &zip, const std::string &dest) {
+    d().fillScreen(kBg);
+    text(W / 2, 280, "Extracting " + baseName(zip), Font::Big, kText, kBg, 1);
+    const auto r = zipx::extract(zip, dest, [](const std::string &name, int i, int n) {
+      char b[40];
+      snprintf(b, sizeof(b), "%d of %d", i + 1, n);
+      text(W / 2, 350, b, Font::Body, kDim, kBg, 1, 400);
+      text(W / 2, 390, fit(name, Font::Small, 1100), Font::Small, kDim, kBg, 1, 1200);
+    });
+    if (r.ok) {
+      remove(zip.c_str());
+      runner::note("Extracted %d files (%s) into %s/", r.files, bytesText(r.bytes).c_str(), baseName(dest).c_str());
+    } else {
+      runner::note("Extracting %s failed: %s", baseName(zip).c_str(), r.error.c_str());
+    }
+    scan();
   }
 
   void move(int by) {
@@ -796,7 +839,8 @@ class FilesScreen : public Screen {
       const bool s = i == sel_;
       const uint32_t bg = s ? kAccentDim : (r % 2 ? kBg : kPanel);
       d().fillRect(16, y, 1248, kRowH - 2, bg);
-      text(36, y + 13, it.dir ? "DIR" : "", Font::Small, kWarn, bg);
+      const char *tag = it.dir ? "DIR" : zipx::isZip(it.name) ? "ZIP" : isText(it.name) ? "TEXT" : "";
+      text(36, y + 13, tag, Font::Small, it.dir ? kWarn : kDim, bg);
       text(100, y + 12, fit(it.name, Font::Body, 900), Font::Body, kText, bg);
       if (!it.dir) text(1244, y + 15, bytesText(it.size), Font::Small, s ? kText : kDim, bg, 2);
     }
@@ -931,9 +975,28 @@ uint32_t crcFile(const std::string &path, uint32_t *size, bool *ok) {
 
 // ============================================================================
 
+// Uploads land as <name>.part and are renamed when complete; one cut off by
+// a restart (the Wi-Fi watchdog, a power loss) leaves its .part behind.
+void removePartials(const std::string &dir, int depth) {
+  DIR *d = opendir(dir.c_str());
+  if (!d) return;
+  std::vector<std::string> subdirs;
+  while (dirent *e = readdir(d)) {
+    if (e->d_name[0] == '.') continue;
+    const std::string p = dir + "/" + e->d_name;
+    const size_t n = strlen(e->d_name);
+    if (e->d_type == DT_DIR) subdirs.push_back(p);
+    else if (n > 5 && !strcmp(e->d_name + n - 5, ".part")) remove(p.c_str());
+  }
+  closedir(d);
+  if (depth < 4)
+    for (auto &s : subdirs) removePartials(s, depth + 1);
+}
+
 void begin() {
   mkdir("/sdcard/burner", 0777);
   mkdir(kImages, 0777);
+  removePartials(kImages, 0);
   auto &s = settings::get();
   if (parts::loaded() && !s.part_name.empty()) {
     const int r = parts::find(s.part_name.c_str(), s.part_maker.c_str());

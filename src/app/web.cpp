@@ -22,6 +22,7 @@
 #include "runner.h"
 #include "settings.h"
 #include "web_page.h"
+#include "zipx.h"
 
 #include "web_setup.h"
 
@@ -36,6 +37,7 @@ constexpr const char *kTop = "/burner";
 
 State g_state = State::Off;
 bool g_ever_connected = false;   // joined the saved network at least once this boot
+uint32_t g_upload_pace_ms = 0;   // pause per 16 KB received (see handlePut)
 std::string g_ssid;
 uint32_t g_join_ms = 0;
 httpd_handle_t g_server = nullptr;
@@ -242,7 +244,8 @@ esp_err_t handleGet(httpd_req_t *req) {
   if (path.empty()) return fail(req, "403 Forbidden", "outside /burner");
   FILE *f = fopen(path.c_str(), "rb");
   if (!f) return fail(req, "404 Not Found", "no such file");
-  httpd_resp_set_type(req, "application/octet-stream");
+  // ?view=1: shown in the browser (README files), not downloaded.
+  httpd_resp_set_type(req, query(req, "view") == "1" ? "text/plain; charset=utf-8" : "application/octet-stream");
   static char *buf = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
   size_t n;
   while ((n = fread(buf, 1, 8192, f)) > 0) {
@@ -277,11 +280,31 @@ esp_err_t handlePut(httpd_req_t *req) {
     }
     left -= n;
     timeouts = 0;
+    // Pacing: a continuous inbound stream over the C6's SDIO link is a known
+    // way to wedge it (espressif/esp-hosted-mcu#184); a pause per chunk
+    // gives it room. 0 = none.
+    if (g_upload_pace_ms) vTaskDelay(pdMS_TO_TICKS(g_upload_pace_ms));
   }
   fclose(f);
   remove(path.c_str());
   if (rename(tmp.c_str(), path.c_str()) != 0) return fail(req, "500 Internal Server Error", "rename failed");
   runner::note("Wi-Fi: received %s (%d bytes)", app::baseName(path).c_str(), (int)req->content_len);
+  // A zip is a way of carrying files, not an image: unpack it into a folder
+  // named after it, and drop the zip once everything is out.
+  if (zipx::isZip(path)) {
+    const std::string dest = path.substr(0, path.rfind('/') + 1) + zipx::stem(app::baseName(path));
+    const auto r = zipx::extract(path, dest);
+    char msg[200];
+    if (r.ok) {
+      remove(path.c_str());
+      snprintf(msg, sizeof(msg), "Extracted %d files into %s/", r.files, app::baseName(dest).c_str());
+    } else {
+      snprintf(msg, sizeof(msg), "Uploaded, but extracting failed: %s", r.error.c_str());
+    }
+    runner::note("Wi-Fi: %s", msg);
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, msg);
+  }
   return ok(req);
 }
 
@@ -306,6 +329,12 @@ esp_err_t handleRename(httpd_req_t *req) {
   const std::string from = cardPath(query(req, "from")), to = cardPath(query(req, "to"));
   if (from.empty() || to.empty()) return fail(req, "403 Forbidden", "outside /burner");
   if (rename(from.c_str(), to.c_str()) != 0) return fail(req, "409 Conflict", "rename failed");
+  return ok(req);
+}
+
+// Test knob for the upload pacing experiment (see handlePut).
+esp_err_t handlePace(httpd_req_t *req) {
+  g_upload_pace_ms = (uint32_t)atoi(query(req, "ms").c_str());
   return ok(req);
 }
 
@@ -447,7 +476,7 @@ void startServer() {
       {"/api/list", HTTP_GET, handleList},   {"/api/get", HTTP_GET, handleGet},
       {"/api/put", HTTP_PUT, handlePut},     {"/api/delete", HTTP_POST, handleDelete},
       {"/api/mkdir", HTTP_POST, handleMkdir}, {"/api/rename", HTTP_POST, handleRename},
-      {"/api/use", HTTP_POST, handleUse},
+      {"/api/use", HTTP_POST, handleUse},    {"/api/pace", HTTP_POST, handlePace},
   };
   for (auto &r : routes) {
     httpd_uri_t u = {};
@@ -462,7 +491,9 @@ void startServer() {
 void startPortal() {
   if (g_portal) return;
   // AP+STA: the station side scans, and joins once a network is chosen.
-  WiFi.disconnect(false);   // stop retrying a network that is not there
+  // With a saved network the station keeps trying it (see loop): a router
+  // that was slow or down at boot must not strand the Tab5 in setup mode.
+  if (settings::get().wifi_ssid.empty()) WiFi.disconnect(false);
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(kApIp, kApIp, IPAddress(255, 255, 255, 0));
   WiFi.softAP(g_ap.c_str());
@@ -559,7 +590,7 @@ void loop() {
       }
       // Leave the hotspot up long enough for the phone to show the result.
       if (g_portal) g_portal_close_ms = millis() + 60000;
-    } else if (millis() - g_join_ms > 20000) {
+    } else if (millis() - g_join_ms > 45000) {   // since the C6's 2.12 firmware a join can take ~25 s
       if (g_ever_connected && !g_portal) {
         // It worked before (router rebooting, out of range): keep trying the
         // saved network rather than stranding the Tab5 in setup mode.
@@ -578,6 +609,13 @@ void loop() {
     g_join_ms = millis();
   }
   if (g_portal && g_portal_close_ms && (int32_t)(millis() - g_portal_close_ms) >= 0) stopPortal();
+  // Setup mode with a saved network: try it again every 30 s, but not while a
+  // phone is on the hotspot (joining moves the radio's channel under it).
+  if (g_portal && g_state == State::Failed && !settings::get().wifi_ssid.empty() &&
+      WiFi.softAPgetStationNum() == 0 && millis() - g_join_ms > 30000) {
+    auto &st = settings::get();
+    connect(st.wifi_ssid, st.wifi_pass);
+  }
   watchLink();
 }
 
@@ -605,6 +643,8 @@ void join(const std::string &ssid, const std::string &pass) {
   else WiFi.disconnect(false);   // not the radio: it cannot be restarted
   connect(ssid, pass);
 }
+
+void setUploadPace(uint32_t ms) { g_upload_pace_ms = ms; }
 
 void reconnect() {
   auto &s = settings::get();

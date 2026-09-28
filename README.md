@@ -24,6 +24,14 @@ replaced, so it behaves exactly as it does on a desktop.
   or save as; changed bytes are highlighted and the CRC32 is always shown.
 - **Browser file manager** for the card: drag-and-drop upload, download,
   rename, folders, delete, and "Burn this" to make a file the image to write.
+- **Zip files unpack themselves:** an uploaded `.zip` is extracted into a
+  folder of the same name (a single top folder inside it and macOS
+  `__MACOSX` clutter are dropped) and removed; on the Tab5, choosing a `.zip`
+  in the image picker offers to extract it. Stored and deflate, CRC-checked.
+- **README viewer:** a `README.md` (or `.txt`) in a folder opens in a reader
+  from the image picker (M, or pick the file); Markdown gets headings, lists
+  and code blocks, plain text a monospaced font so column tables line up.
+  The browser shows them with a View button.
 - **Wi-Fi setup with no computer:** with no network saved (or one it cannot
   join), the Tab5 opens an open `T48-for-Tab5-XXXX` hotspot whose captive
   portal pops up on a phone to pick a network and type its password. The
@@ -104,6 +112,9 @@ Main screen keys (all are also buttons):
 
 Write and erase ask first. A read becomes the current image.
 
+Image picker: Enter picks an image (or opens a folder, a README, or offers to
+extract a zip), M opens the folder's README, Del deletes, Esc goes back.
+
 Hex editor: arrows, PgUp/PgDn, Home/End, Ctrl+Home/End; hex digits (or text
 on the ASCII side; Tab switches sides); Ctrl+G go to, Ctrl+F find (`C3 00 10`
 or `"text"`), Ctrl+N next, Ctrl+Z undo, Ctrl+S save, Ctrl+A save as, Esc.
@@ -131,6 +142,15 @@ Lessons from getting here:
   esp_hosted, whose transport needs DMA-capable internal RAM. With minipro's
   48 KB stack and a few file buffers in internal RAM, one upload left 4 KB in
   one piece and the network died for good. They live in PSRAM now.
+- **Update the Wi-Fi chip.** The Tab5's C6 shipped with esp-hosted 1.4.1
+  while this build's host side is 2.12.11; the Wi-Fi screen shows both and
+  offers "Update Wi-Fi chip" (downloaded from Espressif) when they differ.
+- **The C6 link can still wedge** (after a Wi-Fi scan most often, sometimes on
+  the first big upload after boot), a known esp-hosted problem on P4 + C6
+  boards (espressif/esp-hosted-mcu#184). The station still reports
+  "connected", so the firmware pings the router every 10 s and, after 30 s of
+  silence, restarts when idle on the main screen (rejoining never helped).
+  `/api/wifistate` shows the counters.
 - **ESP-IDF logging is off.** With a computer attached but nothing reading
   the USB serial port, log writes from the Wi-Fi stack stalled it and uploads
   intermittently killed the network.

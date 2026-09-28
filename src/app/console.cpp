@@ -275,6 +275,10 @@ void run(const std::string &line) {
     else web::join(a[1], a.size() > 2 ? a[2] : "");
     return done(0);
   }
+  if (c == "pace" && a.size() > 1) {
+    web::setUploadPace(atoi(a[1].c_str()));
+    return done(0);
+  }
   if (c == "memlog") {
     g_memlog = a.size() < 2 || a[1] != "off";
     return done(0);

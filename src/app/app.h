@@ -44,6 +44,11 @@ void goParts();
 void goFiles();
 void goHex();
 void goWifi();
+// Shows a text file (README.md rendered as simple Markdown, others as plain
+// text); Esc returns to back().
+void goText(const std::string &path, std::function<void()> back);
+// The folder's README (README.md, then README.txt or README), or "".
+std::string findReadme(const std::string &dir);
 
 void prompt(const std::string &title, const std::string &initial,
             std::function<void(bool ok, const std::string &text)> done);

@@ -34,7 +34,7 @@ td.acts{text-align:right;white-space:nowrap}td.acts button{padding:3px 8px;font-
 <div class="bar"><div class="crumbs" id="crumbs"></div><div style="flex:1"></div>
 <button onclick="mkdir()">New folder</button>
 <label class="btn primary">Upload files<input type="file" id="pick" multiple hidden></label></div>
-<div id="drop">Drop ROM images here to upload them to this folder<div class="prog" id="prog" hidden><i></i></div></div>
+<div id="drop">Drop ROM images here to upload them to this folder (a .zip is unpacked into a folder of its name)<div class="prog" id="prog" hidden><i></i></div></div>
 <div id="msg"></div>
 <table><thead><tr><th>Name</th><th class="size">Size</th><th></th></tr></thead><tbody id="rows"></tbody></table>
 </main>
@@ -57,11 +57,12 @@ let h=dir!='/burner'?'<tr><td class="name"><a class="dir" data-up>..</a></td><td
 for(const f of list){const p=dir+'/'+f.name;
 h+='<tr><td class="name">'+(f.dir?'<a class="dir" data-d="'+esc(p)+'">'+esc(f.name)+'/</a>':'<a href="/api/get?path='+encodeURIComponent(p)+'" download="'+esc(f.name)+'">'+esc(f.name)+'</a>'+('/sdcard'+p==image?'<span class="cur">current image</span>':''))+
 '</td><td class="size">'+(f.dir?'':fmt(f.size))+'</td><td class="acts">'+
-(f.dir?'':'<button data-use="'+esc(p)+'">Burn this</button>')+'<button data-ren="'+esc(p)+'">Rename</button><button class="danger" data-del="'+esc(p)+'">Delete</button></td></tr>'}
+(f.dir?'':/\.(md|txt)$|^readme$/i.test(f.name)?'<button data-view="'+esc(p)+'">View</button>':'<button data-use="'+esc(p)+'">Burn this</button>')+'<button data-ren="'+esc(p)+'">Rename</button><button class="danger" data-del="'+esc(p)+'">Delete</button></td></tr>'}
 if(!list.length)h+='<tr><td colspan="3" style="color:var(--dim)">Empty folder</td></tr>';
 $('#rows').innerHTML=h;
 $('#rows').querySelectorAll('[data-d]').forEach(a=>a.onclick=()=>go(a.dataset.d));
 $('#rows').querySelectorAll('[data-up]').forEach(a=>a.onclick=()=>go(dir.replace(/\/[^/]+$/,'')));
+$('#rows').querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>window.open('/api/get?view=1&path='+encodeURIComponent(b.dataset.view)));
 $('#rows').querySelectorAll('[data-use]').forEach(b=>b.onclick=()=>post('/api/use?path=',b.dataset.use,'Chosen on the Tab5: '));
 $('#rows').querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{if(confirm('Delete '+b.dataset.del.split('/').pop()+'?'))post('/api/delete?path=',b.dataset.del,'Deleted ')});
 $('#rows').querySelectorAll('[data-ren]').forEach(b=>b.onclick=()=>ren(b.dataset.ren));
@@ -73,11 +74,12 @@ async function mkdir(){const n=prompt('Folder name');if(!n)return;post('/api/mkd
 function put(file){return new Promise((ok,no)=>{const x=new XMLHttpRequest();
 x.open('PUT','/api/put?path='+encodeURIComponent(dir+'/'+file.name));
 x.upload.onprogress=e=>{$('#prog i').style.width=(e.loaded/e.total*100)+'%'};
-x.onload=()=>x.status==200?ok():no(new Error(x.responseText||x.statusText));x.onerror=()=>no(new Error('upload failed'));x.send(file)})}
-async function upload(files){$('#prog').hidden=false;let n=0;
-for(const f of files){msg('Uploading '+f.name+' ('+(++n)+' of '+files.length+')...');
-try{await put(f)}catch(e){msg(f.name+': '+e.message,1);$('#prog').hidden=true;return load()}}
-$('#prog').hidden=true;msg('Uploaded '+files.length+' file'+(files.length>1?'s':''));load()}
+x.onload=()=>x.status==200?ok(x.responseText):no(new Error(x.responseText||x.statusText));x.onerror=()=>no(new Error('upload failed'));x.send(file)})}
+async function upload(files){$('#prog').hidden=false;let n=0;const notes=[];
+for(const f of files){msg((/\.zip$/i.test(f.name)?'Uploading and unzipping ':'Uploading ')+f.name+' ('+(++n)+' of '+files.length+')...');
+let r;try{r=await put(f)}catch(e){msg(f.name+': '+e.message,1);$('#prog').hidden=true;return load()}
+if(r&&r!='ok')notes.push(f.name+': '+r)}
+$('#prog').hidden=true;msg(notes.length?notes.join('  |  '):'Uploaded '+files.length+' file'+(files.length>1?'s':''));load()}
 $('#pick').onchange=e=>{upload([...e.target.files]);e.target.value=''};
 const dz=$('#drop');['dragenter','dragover'].forEach(t=>dz.addEventListener(t,e=>{e.preventDefault();dz.classList.add('over')}));
 ['dragleave','drop'].forEach(t=>dz.addEventListener(t,e=>{e.preventDefault();dz.classList.remove('over')}));

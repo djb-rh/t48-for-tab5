@@ -23,7 +23,8 @@ std::string statusText();   // for the header: "off", "joining...", "10.0.1.23"
 // Joins another network (and remembers it).
 void join(const std::string &ssid, const std::string &pass);
 void forget();
-void reconnect();               // drop and rejoin the saved network                  // clears the saved network (next boot: setup)
+void reconnect();               // drop and rejoin the saved network
+void setUploadPace(uint32_t ms);  // pause per 16 KB received (0: none)                  // clears the saved network (next boot: setup)
 
 // The setup hotspot (captive portal): an open network, T48-for-Tab5-XXXX, whose
 // page picks a network and password. It opens by itself when there is no
