@@ -17,6 +17,13 @@ replaced, so it behaves exactly as it does on a desktop.
 - **Every T48 part minipro knows** (about 30,000 names): type part of a name,
   arrows and Enter to pick. Memory parts get blank check, read, write,
   verify, erase and chip ID; logic parts get minipro's logic test.
+- **A sign you can read across the room** when a job ends: a red STOP sign
+  if a blank check, read, write, verify, erase or chip ID fails, a green GOOD
+  square if it passed.
+- **Wrong chip in the socket?** When the chip ID doesn't match the part you
+  chose, the ID is looked up in the whole library (parts programmed the same
+  way, same package first) and you're offered the match. An ID of 0000 or
+  FFFF means no chip answered: check its orientation and the lever.
 - **Write options** as toggles: size mismatch OK, skip erase, skip verify,
   ignore chip ID mismatch.
 - **Hex editor** for the chosen image: 16 bytes a row with ASCII, type over
@@ -143,7 +150,7 @@ Lessons from getting here:
   48 KB stack and a few file buffers in internal RAM, one upload left 4 KB in
   one piece and the network died for good. They live in PSRAM now.
 - **Update the Wi-Fi chip.** The Tab5's C6 shipped with esp-hosted 1.4.1
-  while this build's host side is 2.12.11; the Wi-Fi screen shows both and
+  while this build's host side is 2.12.13 (v1.2; v1.1 was 2.12.11); the Wi-Fi screen shows both and
   offers "Update Wi-Fi chip" (downloaded from Espressif) when they differ.
 - **The C6 link can still wedge** (after a Wi-Fi scan most often, sometimes on
   the first big upload after boot), a known esp-hosted problem on P4 + C6
@@ -151,6 +158,11 @@ Lessons from getting here:
   "connected", so the firmware pings the router every 10 s and, after 30 s of
   silence, restarts when idle on the main screen (rejoining never helped).
   `/api/wifistate` shows the counters.
+- **Uploads go in 16 KB pieces** (`PUT /api/put?path=&offset=&total=`), each
+  appended to a `.part` file: one long inbound stream is what wedges the link.
+  About 220 KB/s from a browser, which keeps the connection open.
+- **minipro's `exit()`** would restart the board (ESP-IDF aborts); it
+  `longjmp`s back to the caller instead, which is what makes Chip info work.
 - **ESP-IDF logging is off.** With a computer attached but nothing reading
   the USB serial port, log writes from the Wi-Fi stack stalled it and uploads
   intermittently killed the network.
