@@ -71,10 +71,16 @@ async function post(u,p,t){try{await api(u+encodeURIComponent(p),{method:'POST'}
 async function ren(p){const n=prompt('New name',p.split('/').pop());if(!n)return;
 try{await api('/api/rename?from='+encodeURIComponent(p)+'&to='+encodeURIComponent(dir+'/'+n),{method:'POST'});load()}catch(e){msg(e.message,1)}}
 async function mkdir(){const n=prompt('Folder name');if(!n)return;post('/api/mkdir?path=',dir+'/'+n,'Made ')}
-function put(file){return new Promise((ok,no)=>{const x=new XMLHttpRequest();
-x.open('PUT','/api/put?path='+encodeURIComponent(dir+'/'+file.name));
-x.upload.onprogress=e=>{$('#prog i').style.width=(e.loaded/e.total*100)+'%'};
-x.onload=()=>x.status==200?ok(x.responseText):no(new Error(x.responseText||x.statusText));x.onerror=()=>no(new Error('upload failed'));x.send(file)})}
+// 16 KB pieces: one long upload stream can wedge the Tab5's Wi-Fi link.
+const PIECE=16384;
+function putPiece(url,blob){return new Promise((ok,no)=>{const x=new XMLHttpRequest();x.open('PUT',url);
+x.onload=()=>x.status==200?ok(x.responseText):no(new Error(x.responseText||x.statusText));x.onerror=()=>no(new Error('upload failed'));x.send(blob)})}
+async function put(file){const base='/api/put?path='+encodeURIComponent(dir+'/'+file.name)+'&total='+file.size+'&offset=';
+let r='ok';if(!file.size)return putPiece(base+'0',file);
+for(let o=0;o<file.size;o+=PIECE){let tries=0;
+for(;;){try{r=await putPiece(base+o,file.slice(o,o+PIECE));break}catch(e){if(++tries>3)throw e;await new Promise(z=>setTimeout(z,1000))}}
+$('#prog i').style.width=(Math.min(file.size,o+PIECE)/file.size*100)+'%'}
+return r}
 async function upload(files){$('#prog').hidden=false;let n=0;const notes=[];
 for(const f of files){msg((/\.zip$/i.test(f.name)?'Uploading and unzipping ':'Uploading ')+f.name+' ('+(++n)+' of '+files.length+')...');
 let r;try{r=await put(f)}catch(e){msg(f.name+': '+e.message,1);$('#prog').hidden=true;return load()}

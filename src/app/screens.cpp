@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "app.h"
@@ -291,6 +292,7 @@ class MainScreen : public Screen {
     int bar_w = -1;
     uint32_t bar_color = 0;
     std::vector<std::string> lines;
+    int sign = -1;          // 0 none, 1 GOOD, 2 STOP
   } log_;
 
   static uint32_t lineColor(const std::string &l) {
@@ -302,8 +304,44 @@ class MainScreen : public Screen {
     return kDim;
   }
 
+  // The jobs whose outcome gets a sign: the ones that touch the chip.
+  static bool signedJob(const std::string &t) {
+    return t == "Blank check" || t == "Read" || t == "Write" || t == "Verify" || t == "Erase" ||
+           t == "Chip ID" || t == "Logic test";
+  }
+
+  // A road-sign STOP octagon or a green GOOD square, 176 px, right of the log.
+  void drawSign(int sign) {
+    constexpr int cx = 1150, cy = 600, R = 88;
+    d().fillRect(cx - R - 4, cy - R - 4, 2 * R + 8, 2 * R + 8, kPanel);
+    if (!sign) return;
+    if (sign == 2) {
+      auto octagon = [&](int r, uint32_t c) {
+        // Flat-topped: corners at 22.5 + 45k degrees.
+        int xs[8], ys[8];
+        for (int k = 0; k < 8; k++) {
+          const float a = (22.5f + 45.0f * k) * 3.14159265f / 180.0f;
+          xs[k] = cx + (int)lroundf(r * cosf(a));
+          ys[k] = cy + (int)lroundf(r * sinf(a));
+        }
+        for (int k = 0; k < 8; k++) d().fillTriangle(cx, cy, xs[k], ys[k], xs[(k + 1) % 8], ys[(k + 1) % 8], c);
+      };
+      octagon(R, 0xFFFFFF);
+      octagon(R - 7, 0xC8102E);
+      text(cx, cy - fontHeight(Font::Sign) / 2, "STOP", Font::Sign, 0xFFFFFF, 0xC8102E, 1);
+    } else {
+      // uint32_t: LovyanGFX reads a bare int colour as RGB565.
+      constexpr int h = 2 * R - 12;
+      constexpr uint32_t kWhite = 0xFFFFFF, kGreen = 0x1E8E3E;
+      d().fillRoundRect(cx - h / 2, cy - h / 2, h, h, 14, kWhite);
+      d().fillRoundRect(cx - h / 2 + 7, cy - h / 2 + 7, h - 14, h - 14, 10, kGreen);
+      text(cx, cy - fontHeight(Font::Sign) / 2, "GOOD", Font::Sign, 0xFFFFFF, 0x1E8E3E, 1);
+    }
+  }
+
   void drawLog(bool full = false) {
-    constexpr int kBarX = 36, kBarY = 544, kBarW = 1208, kBarH = 14;
+    // The log takes the left of the panel; the result sign the right.
+    constexpr int kBarX = 36, kBarY = 544, kBarW = 990, kBarH = 14, kTextW = 1000;
     if (full || !log_.valid) {
       panel(16, 496, 1248, 208, kPanel);
       progressBar(kBarX, kBarY, kBarW, kBarH, 0, kPanel2);
@@ -330,9 +368,9 @@ class MainScreen : public Screen {
       head = "Ready";
       color = kDim;
     }
-    head = fit(head, Font::Body, 1000);
+    head = fit(head, Font::Body, 880);
     if (head != log_.head || color != log_.head_color) {
-      text(36, 508, head, Font::Body, color, kPanel, 0, 1040);
+      text(36, 508, head, Font::Body, color, kPanel, 0, 900);
       log_.head = head;
       log_.head_color = color;
     }
@@ -342,7 +380,7 @@ class MainScreen : public Screen {
       pct = b;
     }
     if (pct != log_.pct) {
-      text(1244, 508, pct, Font::Body, kText, kPanel, 2, 120);
+      text(kBarX + kBarW, 508, pct, Font::Body, kText, kPanel, 2, 100);
       log_.pct = pct;
     }
     const int p = st.busy ? (st.percent >= 0 ? st.percent : 0) : (st.finished ? 100 : 0);
@@ -357,12 +395,17 @@ class MainScreen : public Screen {
     log_.bar_color = bc;
     const auto lines = runner::lines(5);
     for (int i = 0; i < 5; i++) {
-      const std::string l = i < (int)lines.size() ? fit(lines[i], Font::Small, 1208) : "";
+      const std::string l = i < (int)lines.size() ? fit(lines[i], Font::Small, kTextW) : "";
       if (i < (int)log_.lines.size() && log_.lines[i] == l) continue;
-      text(36, 572 + i * 25, l, Font::Small, lineColor(l), kPanel, 0, 1208);
+      text(36, 572 + i * 25, l, Font::Small, lineColor(l), kPanel, 0, kTextW);
     }
     log_.lines.assign(5, "");
-    for (int i = 0; i < 5 && i < (int)lines.size(); i++) log_.lines[i] = fit(lines[i], Font::Small, 1208);
+    for (int i = 0; i < 5 && i < (int)lines.size(); i++) log_.lines[i] = fit(lines[i], Font::Small, kTextW);
+    const int sign = (!st.busy && st.finished && signedJob(st.title)) ? (st.rc == 0 ? 1 : 2) : 0;
+    if (sign != log_.sign) {
+      drawSign(sign);
+      log_.sign = sign;
+    }
   }
 
   void finished(const runner::Status &st) {
@@ -373,6 +416,65 @@ class MainScreen : public Screen {
       drawImage();
       d().endWrite();
     }
+    if (st.rc != 0) suggestById();
+  }
+
+  // minipro stops with "Invalid Chip ID: expected 0x203D, got 0x9785 (...)"
+  // and can only name the chip from its one-part database ("unknown"); look
+  // the ID up in the whole library and offer the match.
+  void suggestById() {
+    unsigned expected = 0, got = 0;
+    bool found = false;
+    for (const auto &l : runner::lines(12)) {
+      const size_t p = l.find("Chip ID");
+      if (p != std::string::npos && l.find("expected") != std::string::npos &&
+          sscanf(l.c_str() + l.find("expected"), "expected 0x%x, got 0x%x", &expected, &got) == 2)
+        found = true;
+    }
+    if (!found || g_part < 0) return;
+    if (got == 0 || got == 0xFFFF || got == 0xFFFFFFFF) {
+      runner::note("No chip answered (ID 0x%04X): check it is in the socket the right way round and the lever is down", got);
+      return;
+    }
+    const auto rows = parts::byChipId(got, g_part);
+    if (rows.empty()) {
+      runner::note("No part in the library has chip ID 0x%04X", got);
+      return;
+    }
+    // Prefer the same package as the chosen part (@DIP28 for @DIP28).
+    const std::string cur = partName();
+    const std::string pkg = cur.find('@') == std::string::npos ? "" : cur.substr(cur.find('@'));
+    int best = rows[0];
+    for (int r : rows) {
+      const std::string n = parts::row(r).name;
+      if (!pkg.empty() && n.size() > pkg.size() && n.compare(n.size() - pkg.size(), pkg.size(), pkg) == 0) {
+        best = r;
+        break;
+      }
+    }
+    std::string list;
+    int shown = 0;
+    for (int r : rows) {
+      if (shown == 4) {
+        list += ", ...";
+        break;
+      }
+      list += (shown ? ", " : "") + std::string(parts::row(r).name);
+      shown++;
+    }
+    char head[96];
+    snprintf(head, sizeof(head), "The chip reports ID 0x%04X; %s expects 0x%04X.", got, cur.c_str(), expected);
+    runner::note("Chip ID 0x%04X matches %s", got, list.c_str());
+    const auto &b = parts::row(best);
+    confirm("Wrong chip selected?",
+            std::string(head) + "\nMatching parts: " + list + "\n\nSwitch to " + b.name + " (" + b.maker + ")?",
+            "Switch", [best](bool y) {
+              if (y) {
+                std::string why;
+                if (!setPart(best, &why)) runner::note("%s", why.c_str());
+              }
+              goMain();
+            });
   }
 
   std::vector<std::string> writeFlags() {
@@ -423,7 +525,7 @@ class MainScreen : public Screen {
       case kChooseImage: goFiles(); break;
       case kHex: goHex(); break;
       case kWifi: goWifi(); break;
-      case kInfo: run({"-d", partName()}, "Chip info"); break;
+      case kInfo: run({"-q", "t48", "-d", partName()}, "Chip info"); break;   // -q: no "which programmer?" prompt
       case kBlank: run({"-b"}, "Blank check"); break;
       case kId: run({"-D"}, "Chip ID"); break;
       case kLogic: run({"-T"}, "Logic test"); break;

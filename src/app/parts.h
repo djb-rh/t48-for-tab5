@@ -47,6 +47,11 @@ bool select(int i, std::string *why);
 // Finds a row by name and maker, for restoring the choice at boot.
 int find(const char *name, const char *maker);
 
+// Parts whose chip ID is `id` and whose programming protocol matches the
+// part in row `like` (the same algorithm family), for "the chip says it is
+// something else". Scans entries.xml on the card: a second or two.
+std::vector<int> byChipId(uint32_t id, int like);
+
 // Pretty size: "64 KB", "2 MB", "512 B"; logic parts: "14 pins".
 std::string sizeText(const Row &r);
 

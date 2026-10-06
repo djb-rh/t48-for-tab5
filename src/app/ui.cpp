@@ -21,6 +21,7 @@ const lgfx::IFont *fontOf(Font f) {
     case Font::Big: return &fonts::DejaVu40;
     case Font::Mono: return &fonts::FreeMonoBold12pt7b;
     case Font::MonoSmall: return &fonts::FreeMono9pt7b;
+    case Font::Sign: return &fonts::FreeSansBold24pt7b;
   }
   return &fonts::DejaVu24;
 }

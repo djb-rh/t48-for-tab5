@@ -11,6 +11,8 @@
 //                         {down} {left} {right} {pgup} {pgdn} {home} {end},
 //                         {^x} for Ctrl+x
 //   wifi <ssid> [pass]   join and remember a network; 'wifi forget' clears it
+//   note <text>           put a line in the job log (tests)
+//   chipid <hex> [part]   the chip-ID lookup for the chosen (or named) part's protocol (tests)
 //   memlog [off]         print memory every 2 s
 //   mem                   free internal / DMA / PSRAM memory
 //   sdformat ERASE        format the card (FAT); erases it
@@ -32,6 +34,8 @@
 
 #include "keyboard.h"
 #include "runner.h"
+#include "app.h"
+#include "parts.h"
 #include "sdcard.h"
 #include "web.h"
 #include "ui.h"
@@ -242,8 +246,15 @@ void run(const std::string &line) {
   if (a.empty()) return;
   const std::string &c = a[0];
   if (c == "m") {
+    // "m title=Verify ..." names the job as the UI would (tests of the
+    // result signs); otherwise it is a "Console" job.
     std::vector<std::string> args(a.begin() + 1, a.end());
-    if (!runner::start(args, "Console")) done(1);
+    std::string title = "Console";
+    if (!args.empty() && args[0].compare(0, 6, "title=") == 0) {
+      title = args[0].substr(6);
+      args.erase(args.begin());
+    }
+    if (!runner::start(args, title.c_str())) done(1);
     return;   // the runner prints "== done" when minipro returns
   }
   if (c == "ls") return done(cmdLs(a.size() > 1 ? a[1] : "/sdcard/burner"));
@@ -277,6 +288,27 @@ void run(const std::string &line) {
   }
   if (c == "pace" && a.size() > 1) {
     web::setUploadPace(atoi(a[1].c_str()));
+    return done(0);
+  }
+  if (c == "note" && line.size() > 5) {   // test aid: a line in the job log
+    runner::note("%s", line.substr(5).c_str());
+    return done(0);
+  }
+  if (c == "chipid" && a.size() > 1) {   // test aid: the chip-ID lookup
+    // An optional part name stands in for the chosen part (its protocol).
+    int like = app::part();
+    if (a.size() > 2) {
+      std::vector<int> hits;
+      parts::search(a[2], &hits);
+      for (int h : hits)
+        if (!strcasecmp(parts::row(h).name, a[2].c_str())) {
+          like = h;
+          break;
+        }
+    }
+    const auto rows = parts::byChipId((uint32_t)strtoul(a[1].c_str(), nullptr, 16), like);
+    for (int r : rows) Serial.printf("%s (%s)\n", parts::row(r).name, parts::row(r).maker);
+    Serial.printf("%d match(es)\n", (int)rows.size());
     return done(0);
   }
   if (c == "memlog") {

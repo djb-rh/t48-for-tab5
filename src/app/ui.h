@@ -25,7 +25,7 @@ constexpr uint32_t kText = 0xE6EDF3, kDim = 0x8B949E, kFaint = 0x484F58;
 constexpr uint32_t kAccent = 0x2F81F7, kAccentDim = 0x1F4E8C;
 constexpr uint32_t kGood = 0x3FB950, kBad = 0xF85149, kWarn = 0xD29922, kEdit = 0xFFA657;
 
-enum class Font : uint8_t { Small, Body, Big, Mono, MonoSmall };
+enum class Font : uint8_t { Small, Body, Big, Mono, MonoSmall, Sign };
 
 M5GFX &d();
 void setFont(Font f);

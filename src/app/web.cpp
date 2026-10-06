@@ -263,7 +263,21 @@ esp_err_t handlePut(httpd_req_t *req) {
   const std::string path = cardPath(query(req, "path"));
   if (path.empty()) return fail(req, "403 Forbidden", "outside /burner");
   const std::string tmp = path + ".part";
-  FILE *f = fopen(tmp.c_str(), "wb");
+  // The page sends a file in 16 KB pieces (?offset=&total=): one long inbound
+  // stream is what wedges the C6's SDIO link (espressif/esp-hosted-mcu#184;
+  // FlapBoard went from wedging to 12/12 clean 2 MB uploads this way). Each
+  // piece appends to the .part file; the last one finishes it. Without the
+  // two parameters the body is the whole file, as before.
+  const std::string off_s = query(req, "offset"), total_s = query(req, "total");
+  const bool pieces = !off_s.empty() && !total_s.empty();
+  const long offset = pieces ? atol(off_s.c_str()) : 0;
+  const long total = pieces ? atol(total_s.c_str()) : (long)req->content_len;
+  if (pieces && offset > 0) {
+    struct stat st;
+    if (stat(tmp.c_str(), &st) != 0 || st.st_size != offset)
+      return fail(req, "409 Conflict", "upload out of step; start it again");
+  }
+  FILE *f = fopen(tmp.c_str(), offset > 0 ? "ab" : "wb");
   if (!f) return fail(req, "500 Internal Server Error", "cannot create the file");
   static char *buf = (char *)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
   int left = req->content_len;
@@ -286,9 +300,10 @@ esp_err_t handlePut(httpd_req_t *req) {
     if (g_upload_pace_ms) vTaskDelay(pdMS_TO_TICKS(g_upload_pace_ms));
   }
   fclose(f);
+  if (offset + (long)req->content_len < total) return ok(req);   // more pieces to come
   remove(path.c_str());
   if (rename(tmp.c_str(), path.c_str()) != 0) return fail(req, "500 Internal Server Error", "rename failed");
-  runner::note("Wi-Fi: received %s (%d bytes)", app::baseName(path).c_str(), (int)req->content_len);
+  runner::note("Wi-Fi: received %s (%ld bytes)", app::baseName(path).c_str(), total);
   // A zip is a way of carrying files, not an image: unpack it into a folder
   // named after it, and drop the zip once everything is out.
   if (zipx::isZip(path)) {
@@ -516,6 +531,10 @@ void stopPortal() {
 }
 
 void connect(const std::string &ssid, const std::string &pass) {
+  // The default fast scan joins the first access point it hears; with more
+  // than one on the network, scan every channel and take the strongest.
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   g_ssid = ssid;
   g_state = State::Connecting;
   g_join_ms = millis();

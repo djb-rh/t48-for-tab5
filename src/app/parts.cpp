@@ -194,6 +194,49 @@ int find(const char *name, const char *maker) {
   return -1;
 }
 
+namespace {
+uint32_t attrNum(const char *line, const char *name) {
+  char key[32];
+  snprintf(key, sizeof(key), " %s=\"", name);
+  const char *p = strstr(line, key);
+  return p ? (uint32_t)strtoul(p + strlen(key), nullptr, 0) : 0xFFFFFFFF;
+}
+}  // namespace
+
+std::vector<int> byChipId(uint32_t id, int like) {
+  std::vector<int> out;
+  char path[96];
+  snprintf(path, sizeof(path), "%s/entries.xml", kDbDir);
+  FILE *f = fopen(path, "rb");
+  if (!f) return out;
+  // The protocol of the chosen part, from its own entry line.
+  uint32_t protocol = 0xFFFFFFFF;
+  constexpr size_t kLine = 65536;
+  char *line = (char *)heap_caps_malloc(kLine, MALLOC_CAP_SPIRAM);
+  if (!line) {
+    fclose(f);
+    return out;
+  }
+  if (like >= 0 && fseek(f, g_rows[like].offset, SEEK_SET) == 0 && fgets(line, kLine, f))
+    protocol = attrNum(line, "protocol_id");
+  fseek(f, 0, SEEK_SET);
+  std::vector<uint32_t> offsets;
+  long off = 0;
+  while (fgets(line, kLine, f)) {
+    const long next = ftell(f);
+    const uint32_t cid = attrNum(line, "chip_id");
+    if (cid != 0xFFFFFFFF && cid != 0 && (cid == id || (cid >> 5) == id) &&
+        (protocol == 0xFFFFFFFF || attrNum(line, "protocol_id") == protocol))
+      offsets.push_back((uint32_t)off);
+    off = next;
+  }
+  fclose(f);
+  free(line);
+  for (size_t i = 0; i < g_rows.size(); i++)
+    if (std::find(offsets.begin(), offsets.end(), g_rows[i].offset) != offsets.end()) out.push_back((int)i);
+  return out;
+}
+
 std::string sizeText(const Row &r) {
   char b[32];
   if (!strcmp(r.kind, "Logic")) snprintf(b, sizeof(b), "%u pins", (unsigned)r.size);
