@@ -20,6 +20,8 @@ replaced, so it behaves exactly as it does on a desktop.
 - **A sign you can read across the room** when a job ends: a red STOP sign
   if a blank check, read, write, verify, erase or chip ID fails, a green GOOD
   square if it passed.
+
+  ![A failed job: STOP](docs/result-stop.png)
 - **Wrong chip in the socket?** When the chip ID doesn't match the part you
   chose, the ID is looked up in the whole library (parts programmed the same
   way, same package first) and you're offered the match. An ID of 0000 or
@@ -56,6 +58,13 @@ replaced, so it behaves exactly as it does on a desktop.
 - XGecu T48 in the Tab5's USB-A port. The port is the P4's high-speed USB 2.0
   PHY and its 5 V switch (MT9700) comfortably powers the T48.
 - A microSD card formatted **FAT32** (the prebuilt ESP-IDF has exFAT off).
+- Optional: a 3D-printed **[base for the Tab5, keyboard and battery](https://makerworld.com/en/models/3400348-m5stack-tab5-keyboard-battery-base#profileId-3871457)**
+  (MakerWorld). It screws to the Tab5's four corner inserts and the
+  keyboard's two with six M3 countersunk screws, turning the pair into one
+  rigid unit that sits flat on the bench, with room underneath for the
+  NP-F550 battery to slide out.
+
+![T48 for Tab5 on its printed base, with the T48](docs/base.jpg)
 
 **Battery charging is paused during every job.** While the Tab5's battery
 charges, the T48 only sees about 4.4 V; with charging paused it gets 5 V.
