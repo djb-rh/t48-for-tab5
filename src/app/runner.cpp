@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <functional>
 
 #include "../core/usb_esp.h"
 
@@ -27,6 +28,7 @@ SemaphoreHandle_t g_mux;
 std::deque<std::string> g_lines;
 Status g_status;
 std::vector<std::string> g_args;
+std::function<int()> g_fn;       // a job of the app's own instead of minipro
 volatile bool g_go = false;
 volatile bool g_want_pause = false;
 volatile bool g_paused = false;
@@ -104,19 +106,26 @@ void task(void *) {
       delay(20);
       continue;
     }
-    // Charging off first, and give the rail a moment to come up.
-    g_want_pause = true;
-    for (int i = 0; i < 100 && !g_paused; i++) delay(10);
-    delay(150);
+    int rc;
+    if (g_fn) {
+      // An app job (One ROM): no T48 to feed, so charging stays as it is.
+      rc = g_fn();
+      g_fn = nullptr;
+    } else {
+      // Charging off first, and give the rail a moment to come up.
+      g_want_pause = true;
+      for (int i = 0; i < 100 && !g_paused; i++) delay(10);
+      delay(150);
 
-    std::vector<char *> argv;
-    argv.push_back((char *)"minipro");
-    for (auto &a : g_args) argv.push_back((char *)a.c_str());
-    argv.push_back(nullptr);
-    usbdev::resetStats();
-    optind = 0;   // newlib: a full getopt reset between runs
-    opterr = 1;
-    const int rc = minipro_main((int)argv.size() - 1, argv.data());
+      std::vector<char *> argv;
+      argv.push_back((char *)"minipro");
+      for (auto &a : g_args) argv.push_back((char *)a.c_str());
+      argv.push_back(nullptr);
+      usbdev::resetStats();
+      optind = 0;   // newlib: a full getopt reset between runs
+      opterr = 1;
+      rc = minipro_main((int)argv.size() - 1, argv.data());
+    }
     fflush(stdout);
     fflush(stderr);
 
@@ -182,6 +191,33 @@ bool start(const std::vector<std::string> &args, const char *title) {
   xSemaphoreGive(g_mux);
   g_go = true;
   return true;
+}
+
+bool startFn(std::function<int()> fn, const char *title) {
+  if (g_go) return false;
+  xSemaphoreTake(g_mux, portMAX_DELAY);
+  g_fn = std::move(fn);
+  g_status.busy = true;
+  g_status.title = title;
+  g_status.phase = "Starting...";
+  g_status.percent = -1;
+  g_status.rc = 0;
+  g_status.seq++;
+  g_t0 = millis();
+  pushLine(std::string("> ") + title);
+  xSemaphoreGive(g_mux);
+  g_go = true;
+  return true;
+}
+
+void setPhase(const std::string &phase, int percent) {
+  xSemaphoreTake(g_mux, portMAX_DELAY);
+  if (phase != g_status.phase || percent != g_status.percent) {
+    g_status.phase = phase;
+    g_status.percent = percent;
+    g_status.seq++;
+  }
+  xSemaphoreGive(g_mux);
 }
 
 bool busy() { return g_go; }

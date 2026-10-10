@@ -15,6 +15,7 @@
 #include "console.h"
 #include "keyboard.h"
 #include "parts.h"
+#include "onerom.h"
 #include "runner.h"
 #include "sdcard.h"
 #include "ui.h"
@@ -60,6 +61,10 @@ void updateStatus() {
 }  // namespace
 
 void setup() {
+  // Local time (US Eastern) from the start: the clock survives a soft reset,
+  // and NTP sets it again once Wi-Fi joins.
+  setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
+  tzset();
   auto cfg = M5.config();
   cfg.output_power = false;   // every outgoing 5 V rail; only USB-A is wanted
   M5.begin(cfg);
@@ -109,6 +114,7 @@ void loop() {
   keyboard::tick(now);
   console::poll();
   web::loop();
+  onerom::tick();
 
   std::string chosen;
   if (web::takeChosenImage(&chosen)) {

@@ -36,6 +36,9 @@ bool isOneRom(uint16_t v, uint16_t p) {
   return (v == 0x1209 && (p == 0xF540 || p == 0xF542)) || (v == 0x2E8A && p == 0x000F);
 }
 volatile bool g_onerom = false;
+volatile bool g_onerom_boot = false;   // in a bootloader (RP2350's own or One ROM's)
+volatile uint32_t g_onerom_gen = 0;    // bumps on every One ROM attach
+char g_onerom_serial[40] = "";
 uint8_t g_intf = 0;                    // the claimed interface
 uint8_t g_pb_out = 0x03, g_pb_in = 0x83;   // its bulk endpoints (the bootloader's IN is 84)
 constexpr uint32_t kTimeoutMs = 5000;              // usb_nix.c MP_USBTIMEOUT
@@ -161,12 +164,19 @@ void openDevice(uint8_t addr) {
     g_dev = nullptr;
     return;
   }
-  if (onerom) describe(g_dev);
   // picoboot is interface 1 when there are several (0 in a bare bootloader).
   const usb_config_desc_t *cd = nullptr;
   usb_host_get_active_config_descriptor(g_dev, &cd);
   g_intf = onerom && cd && cd->bNumInterfaces > 1 ? 1 : 0;
   g_onerom = onerom;
+  if (onerom) {
+    g_onerom_boot = dd->idProduct == 0x000F || dd->idProduct == 0xF540;
+    int n = 0;
+    const usb_str_desc_t *sd = info.str_desc_serial_num;
+    for (int i = 0; sd && i < (sd->bLength - 2) / 2 && n < (int)sizeof(g_onerom_serial) - 1; i++)
+      g_onerom_serial[n++] = (char)(sd->wData[i] & 0x7F);
+    g_onerom_serial[n] = 0;
+  }
   readEndpoints(g_intf);
   if (usb_host_interface_claim(g_client, g_dev, g_intf, 0) != ESP_OK) {
     log("usb: claiming interface %u failed", g_intf);
@@ -175,17 +185,19 @@ void openDevice(uint8_t addr) {
     return;
   }
   g_claimed = true;
+  if (onerom) g_onerom_gen++;
   log("usb: %s attached, %s speed", onerom ? "One ROM" : "programmer", info.speed == USB_SPEED_HIGH ? "high" : "full");
 }
 
 void closeDevice() {
   if (!g_dev) return;
+  const bool was_onerom = g_onerom;
   g_claimed = false;
   usb_host_interface_release(g_client, g_dev, g_intf);
   g_onerom = false;
   usb_host_device_close(g_client, g_dev);
   g_dev = nullptr;
-  log("usb: programmer detached");
+  log("usb: %s detached", was_onerom ? "One ROM" : "programmer");
 }
 
 void onClientEvent(const usb_host_client_event_msg_t *msg, void *) {
@@ -336,6 +348,9 @@ void powerPort(bool on) {
 
 bool attached() { return g_claimed && !g_onerom; }
 bool oneRomAttached() { return g_claimed && g_onerom; }
+bool oneRomBootloader() { return oneRomAttached() && g_onerom_boot; }
+uint32_t oneRomGeneration() { return g_onerom_gen; }
+std::string oneRomSerial() { return oneRomAttached() ? g_onerom_serial : ""; }
 
 // ---- picoboot (spike) ------------------------------------------------------
 // A control transfer on EP0, blocking. data is in or out per bmRequestType.
@@ -369,19 +384,25 @@ void picobootRecover() {
   uint8_t st[16] = {};
   if (control(0xC1, 0x42, 0, g_intf, st, 16) == 0)
     log("pb: status token %u code %u cmd %02x busy %u", st[0] | st[1] << 8, st[4], st[8], st[9]);
-  control(0x41, 0x41, 0, g_intf, nullptr, 0);
   for (uint8_t ep : {g_pb_out, g_pb_in}) {
-    control(0x02, 0x01, 0, ep, nullptr, 0);   // CLEAR_FEATURE(ENDPOINT_HALT)
-    usb_host_endpoint_clear(g_dev, ep);
+    usb_host_endpoint_halt(g_dev, ep);
+    usb_host_endpoint_flush(g_dev, ep);
   }
+  control(0x41, 0x41, 0, g_intf, nullptr, 0);   // picoboot INTERFACE_RESET
+  for (uint8_t ep : {g_pb_out, g_pb_in}) control(0x02, 0x01, 0, ep, nullptr, 0);   // CLEAR_FEATURE(HALT)
+  // CLEAR_FEATURE puts the device's data toggles back to DATA0; the host's
+  // only go back with new pipes, so the interface is released and claimed
+  // again. (Clearing the halt on the host alone left every later read
+  // timing out: the host dropped the device's first packet as a repeat.)
+  usb_host_interface_release(g_client, g_dev, g_intf);
+  if (usb_host_interface_claim(g_client, g_dev, g_intf, 0) != ESP_OK) log("pb: could not claim the interface again");
 }
-// 32-byte command on EP 03; data on 83 (in) or 03 (out); then the other
-// direction carries a zero-length acknowledgement.
-int picoboot(uint8_t cmd_id, const void *args, uint8_t args_len, uint8_t *data, uint32_t len) {
+
+int picoboot(uint8_t cmd_id, const void *args, uint8_t args_len, uint8_t *data, uint32_t len, uint32_t magic) {
   if (!oneRomAttached()) return -1;
   static uint32_t token = 1;
   uint8_t c[32] = {};
-  const uint32_t magic = 0x431fd10b, tok = token++;
+  const uint32_t tok = token++;
   memcpy(c, &magic, 4);
   memcpy(c + 4, &tok, 4);
   c[8] = cmd_id;

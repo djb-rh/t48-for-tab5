@@ -1,0 +1,32 @@
+[package]
+name = "onerom-ffi"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "One ROM's image builder and firmware parser behind a C ABI, for T48 for Tab5"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+# Host builds (tests on the Mac) use std's allocator and panic handler.
+std = ["onerom-fw-parser/std"]
+
+[dependencies]
+# One ROM (MIT), pinned: the image layout must match the firmware it targets.
+onerom-gen = { git = "https://github.com/piersfinlayson/one-rom", rev = "4013bec01d6a2a515330f32c0bda7b2692a0f7d1" }
+onerom-config = { git = "https://github.com/piersfinlayson/one-rom", rev = "4013bec01d6a2a515330f32c0bda7b2692a0f7d1" }
+onerom-fw-parser = { git = "https://github.com/piersfinlayson/one-rom", rev = "4013bec01d6a2a515330f32c0bda7b2692a0f7d1", default-features = false }
+airfrog-rpc = { version = "0.1.2", default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+
+[profile.dev]
+panic = "abort"

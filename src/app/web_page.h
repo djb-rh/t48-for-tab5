@@ -27,6 +27,11 @@ td.acts{text-align:right;white-space:nowrap}td.acts button{padding:3px 8px;font-
 .cur{color:var(--good);font-size:12px;margin-left:8px}
 #msg{min-height:22px;color:var(--dim);margin:8px 0}
 .prog{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:8px}.prog i{display:block;height:100%;background:var(--accent);width:0}
+h2{font-size:16px;margin:28px 0 10px}
+.or{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px}
+.or.here{border-color:var(--good)}.or .meta{color:var(--dim);font-size:13px;margin:6px 0}
+.or input,.or textarea{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font:inherit}
+.or textarea{min-height:70px;margin-top:6px;resize:vertical}.or .row{display:flex;gap:8px;align-items:center;margin-top:8px}
 @media (max-width:600px){td.acts button{margin:2px 0 2px 4px}th.size,td.size{display:none}}
 </style></head><body>
 <header><h1>T48 for Tab5</h1><div id="state">...</div></header>
@@ -37,6 +42,7 @@ td.acts{text-align:right;white-space:nowrap}td.acts button{padding:3px 8px;font-
 <div id="drop">Drop ROM images here to upload them to this folder (a .zip is unpacked into a folder of its name)<div class="prog" id="prog" hidden><i></i></div></div>
 <div id="msg"></div>
 <table><thead><tr><th>Name</th><th class="size">Size</th><th></th></tr></thead><tbody id="rows"></tbody></table>
+<h2>One ROMs</h2><div id="orlist"><div class="meta">None yet: a One ROM is remembered when it is plugged into the Tab5.</div></div>
 </main>
 <script>
 let dir='/burner/images',image='';
@@ -90,6 +96,13 @@ $('#pick').onchange=e=>{upload([...e.target.files]);e.target.value=''};
 const dz=$('#drop');['dragenter','dragover'].forEach(t=>dz.addEventListener(t,e=>{e.preventDefault();dz.classList.add('over')}));
 ['dragleave','drop'].forEach(t=>dz.addEventListener(t,e=>{e.preventDefault();dz.classList.remove('over')}));
 dz.addEventListener('drop',e=>upload([...e.dataTransfer.files]));
-go(dir);setInterval(state,3000);
+async function orLoad(){try{const o=await (await api('/api/onerom')).json();if(!o.devices.length)return;
+$('#orlist').innerHTML=o.devices.map((d,i)=>{const meta=[d.board,d.seen&&'seen '+d.seen,d.image&&(d.image+(d.type?' as '+d.type:'')),d.firmware&&'firmware '+d.firmware].filter(Boolean).join('  |  ');
+return '<div class="or'+(d.serial==o.connected?' here':'')+'"><input id="orn'+i+'" placeholder="Name (where it is, e.g. the board and socket)" value="'+esc(d.name)+'">'+
+'<div class="meta">'+esc(d.serial)+(d.serial==o.connected?' <span class="cur">connected</span>':'')+(meta?'  |  '+esc(meta):'')+'</div>'+
+'<textarea id="ort'+i+'" placeholder="Notes">'+esc(d.notes)+'</textarea><div class="row"><button class="primary" onclick="orSave('+i+',\''+d.serial+'\')">Save</button><span id="ors'+i+'" class="meta"></span></div></div>'}).join('')}catch(e){}}
+async function orSave(i,serial){try{await api('/api/onerom?serial='+serial,{method:'POST',body:$('#orn'+i).value.replace(/\n/g,' ')+'\n'+$('#ort'+i).value});
+$('#ors'+i).textContent='Saved'}catch(e){$('#ors'+i).textContent=e.message}}
+go(dir);orLoad();setInterval(state,3000);
 </script></body></html>
 )HTML";

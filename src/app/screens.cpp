@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "app.h"
+#include "onerom.h"
 #include "parts.h"
 #include "runner.h"
 #include "settings.h"
@@ -39,6 +40,10 @@ std::vector<std::string> baseArgs() {
   return {"-p", partName(), "--infoic", parts::kSelInfoic, "--logicic", parts::kSelLogicic};
 }
 
+void goKnown();
+void goTypes(const std::string &board);
+void editNotes(const std::string &serial);
+
 bool fileExists(const std::string &p) {
   struct stat st;
   return stat(p.c_str(), &st) == 0;
@@ -52,16 +57,40 @@ enum Btn {
   kChoosePart = 1, kInfo, kChooseImage, kHex,
   kBlank, kRead, kWrite, kVerify, kErase, kId, kLogic,
   kOptSize, kOptErase, kOptVerify, kOptId, kWifi,
+  // One ROM mode
+  kOrNotes, kOrType, kOrProgram, kOrRead, kOrVerify, kOrInfo, kOrFirmware, kOrIdentify,
+  kOrFit, kOrCs1, kOrCs2, kOrCs3, kKnown,
 };
+
+// One ROM mode: a One ROM on the USB-A port turns the main screen into its
+// programmer (the T48 and a One ROM share the port, one at a time).
+bool orMode() { return onerom::present(); }
+
+std::string orBoard() {
+  const auto in = onerom::info();
+  return in.board.empty() ? "fire-28-c" : in.board;
+}
 
 class MainScreen : public Screen {
  public:
   void draw() override {
+    buttons_.clear();
+    mode_ = orMode();
     drawHeader();
-    drawChip();
-    drawImage();
-    drawActions();
+    drawPanels();
     drawLog(true);
+  }
+
+  void drawPanels() {
+    if (mode_) {
+      drawOneRom();
+      drawImage();
+      drawOrActions();
+    } else {
+      drawChip();
+      drawImage();
+      drawActions();
+    }
   }
 
   void tick() override {
@@ -71,9 +100,7 @@ class MainScreen : public Screen {
       if (st.busy != was_busy_) {
         was_busy_ = st.busy;
         d().startWrite();
-        drawChip();
-        drawImage();
-        drawActions();
+        drawPanels();
         d().endWrite();
         if (!st.busy) finished(st);
       }
@@ -85,11 +112,13 @@ class MainScreen : public Screen {
     if (now - header_ms_ > 1000) {
       header_ms_ = now;
       const std::string h = headerKey();
-      if (h != header_) {
-        // The T48 coming or going changes which actions are possible.
+      if (orMode() != mode_) {
+        draw();   // a One ROM came or went: the other layout
+      } else if (h != header_) {
+        // The T48 or One ROM coming or going changes which actions are possible.
         d().startWrite();
         drawHeader();
-        drawActions();
+        drawPanels();
         d().endWrite();
       }
     }
@@ -97,7 +126,29 @@ class MainScreen : public Screen {
 
   void key(const Key &k) override {
     if (k.special != Special::None || k.ctrl) return;
-    switch (toupper((unsigned char)k.ch)) {
+    const char c = toupper((unsigned char)k.ch);
+    if (c == 'K') return press(kKnown);
+    if (mode_) {
+      switch (c) {
+        case 'O': press(kOrNotes); break;
+        case 'P': press(kOrType); break;
+        case 'F': press(kChooseImage); break;
+        case 'H': press(kHex); break;
+        case 'W': press(kOrProgram); break;
+        case 'R': press(kOrRead); break;
+        case 'V': press(kOrVerify); break;
+        case 'I': press(kOrInfo); break;
+        case 'U': press(kOrFirmware); break;
+        case 'D': press(kOrIdentify); break;
+        case 'N': press(kWifi); break;
+        case '1': press(kOrFit); break;
+        case '2': press(kOrCs1); break;
+        case '3': press(kOrCs2); break;
+        case '4': press(kOrCs3); break;
+      }
+      return;
+    }
+    switch (c) {
       case 'P': press(kChoosePart); break;
       case 'D': press(kInfo); break;
       case 'F': press(kChooseImage); break;
@@ -131,6 +182,7 @@ class MainScreen : public Screen {
  private:
   uint32_t seq_ = 0;
   bool was_busy_ = false;
+  bool mode_ = false;          // drawn as the One ROM screen
   uint32_t header_ms_ = 0;
   std::string header_;
   std::vector<Button> buttons_;
@@ -140,8 +192,10 @@ class MainScreen : public Screen {
   std::string headerKey() {
     char b[160];
     const Status &s = g_status;
-    snprintf(b, sizeof(b), "%d|%d|%llu|%s|%d|%d", s.t48, s.sd, (unsigned long long)(s.sd_free >> 20),
-             s.wifi.c_str(), s.battery, s.charging);
+    const auto in = onerom::info();
+    snprintf(b, sizeof(b), "%d|%d|%llu|%s|%d|%d|%d|%d|%u|%d|%s|%s", s.t48, s.sd, (unsigned long long)(s.sd_free >> 20),
+             s.wifi.c_str(), s.battery, s.charging, orMode(), onerom::bootloader(), (unsigned)onerom::generation(),
+             in.valid, in.version.c_str(), onerom::latestFirmware().c_str());
     return b;
   }
 
@@ -158,7 +212,8 @@ class MainScreen : public Screen {
       text(x, 18, value, Font::Small, color, kPanel);
       x += textWidth(value.c_str(), Font::Small) + 30;
     };
-    item("T48", s.t48 ? "connected" : "not found", s.t48 ? kGood : kBad);
+    if (mode_) item("One ROM", onerom::bootloader() ? "stopped" : "connected", kGood);
+    else item("T48", s.t48 ? "connected" : "not found", s.t48 ? kGood : kBad);
     item("SD", s.sd ? bytesText(s.sd_free) + " free" : "missing", s.sd ? kText : kBad);
     item("Wi-Fi", s.wifi, s.wifi == "off" ? kDim : kText);
     char bat[24];
@@ -219,7 +274,16 @@ class MainScreen : public Screen {
         char b[64];
         snprintf(b, sizeof(b), "%s  |  CRC32 %08lX", bytesText(g_image.size).c_str(), (unsigned long)g_image.crc);
         line = b;
-        if (g_part >= 0 && !isLogic() && parts::row(g_part).size != g_image.size) {
+        if (mode_) {
+          const auto ct = onerom::chipType(settings::get().onerom.type);
+          if (ct.ok && g_image.size > ct.size) {
+            line += "  |  larger than a " + settings::get().onerom.type;
+            color = kWarn;
+          } else if (ct.ok && g_image.size < ct.size) {
+            line += settings::get().onerom.fit ? "  |  smaller: fitted" : "  |  smaller than a " + settings::get().onerom.type;
+            color = settings::get().onerom.fit ? kDim : kWarn;
+          }
+        } else if (g_part >= 0 && !isLogic() && parts::row(g_part).size != g_image.size) {
           line += "  |  size differs";
           color = kWarn;
         }
@@ -235,6 +299,110 @@ class MainScreen : public Screen {
     b.enabled = !busy() && g_image.ok;
     addButton(b);
   }
+
+  // ---- One ROM mode -----------------------------------------------------------
+
+  void drawOneRom() {
+    panel(16, 72, 608, 196, kPanel);
+    text(36, 86, "ONE ROM", Font::Small, kDim, kPanel);
+    const std::string ser = onerom::serial();
+    text(604, 86, ser, Font::Small, kFaint, kPanel, 2);
+    text(36, 112, fit(onerom::displayName(ser), Font::Big, 568), Font::Big, kText, kPanel);
+    const auto in = onerom::info();
+    std::string line;
+    uint32_t color = kDim;
+    if (onerom::bootloader() && in.board.empty()) {
+      line = "Stopped (bootloader)";
+    } else if (!in.valid) {
+      line = "Reading...";
+    } else {
+      line = in.board.empty() ? "Board unknown" : onerom::boardLabel(in.board);
+      line += "  |  firmware " + (in.version.empty() ? std::string("?") : in.version);
+      const std::string latest = onerom::latestFirmware();
+      if (!latest.empty() && !in.version.empty() && latest != in.version) {
+        line += " (" + latest + " out)";
+        color = kWarn;
+      }
+      for (const auto &sl : in.slots)
+        if (!sl.plugin && sl.active) line += "  |  " + sl.type;
+    }
+    text(36, 160, fit(line, Font::Body, 568), Font::Body, color, kPanel);
+    Button a = mk(kOrNotes, 36, 200, 280, 56, "Name & notes", "O");
+    a.enabled = !busy();
+    addButton(a);
+    type_label_ = "Type: " + settings::get().onerom.type;
+    Button b = mk(kOrType, 330, 200, 274, 56, type_label_.c_str(), "P");
+    b.enabled = !busy();
+    addButton(b);
+  }
+
+  void drawOrActions() {
+    const bool can = !busy() && onerom::present();
+    const bool img = g_image.ok;
+    const int cw = 196, ch = 92;
+    const int xs[3] = {640, 854, 1068};
+    struct A { int id; const char *label, *key; bool en; bool danger; };
+    const A acts[6] = {
+        {kOrProgram, "Program", "W", can && img, true},
+        {kOrRead, "Read", "R", can, false},
+        {kOrVerify, "Verify", "V", can && img, false},
+        {kOrInfo, "Info", "I", can, false},
+        {kOrFirmware, "Firmware", "U", can, true},
+        {kOrIdentify, "Identify", "D", can, false},
+    };
+    for (int i = 0; i < 6; i++) {
+      Button b = mk(acts[i].id, xs[i % 3], 72 + (i / 3) * (ch + 12), cw, ch, acts[i].label, acts[i].key);
+      b.enabled = acts[i].en;
+      b.danger = acts[i].danger;
+      addButton(b);
+    }
+
+    d().fillRect(640, 284, 624, 196, kBg);
+    text(640, 290, "SLOT", Font::Small, kDim, kBg);
+    const auto &o = settings::get().onerom;
+    const auto ct = onerom::chipType(o.type);
+    static const char *kFit[3] = {"Fit: no", "Fit: repeat", "Fit: pad"};
+    static const char *kLvl[3] = {"low", "high", "any"};
+    opt_labels_[0] = kFit[o.fit % 3];
+    for (int i = 0; i < 3; i++) {
+      if (i < (int)ct.config_lines.size()) {
+        std::string n = ct.config_lines[i];
+        for (auto &ch2 : n) ch2 = toupper((unsigned char)ch2);
+        opt_labels_[i + 1] = n + ": " + kLvl[o.cs[i] % 3];
+      } else {
+        opt_labels_[i + 1] = "--";
+      }
+    }
+    const int ids[4] = {kOrFit, kOrCs1, kOrCs2, kOrCs3};
+    const char *keys[4] = {"1", "2", "3", "4"};
+    for (int i = 0; i < 4; i++) {
+      Button b = mk(ids[i], 640 + i * 158, 318, 150, 66, opt_labels_[i].c_str(), keys[i]);
+      b.toggle = false;
+      b.enabled = !busy() && (i == 0 || i - 1 < (int)ct.config_lines.size());
+      addButton(b);
+    }
+    text(640, 398, "NOTES", Font::Small, kDim, kBg);
+    onerom::Notes n;
+    onerom::loadNotes(onerom::serial(), &n);
+    std::string notes = n.notes;
+    for (auto &c : notes)
+      if (c == '\n' || c == '\r') c = ' ';
+    if (notes.empty()) notes = n.image.empty() ? "None yet: O adds a name and notes" : "Last programmed with " + n.image;
+    // Two lines, broken at a space.
+    std::string l1 = notes, l2;
+    if (textWidth(notes.c_str(), Font::Small) > 620) {
+      size_t cut = notes.size();
+      while (cut > 0 && textWidth(notes.substr(0, cut).c_str(), Font::Small) > 620) cut = notes.rfind(' ', cut - 1);
+      if (cut == 0 || cut == std::string::npos) cut = notes.size() / 2;
+      l1 = notes.substr(0, cut);
+      l2 = notes.substr(cut + 1);
+    }
+    text(640, 422, fit(l1, Font::Small, 620), Font::Small, n.notes.empty() ? kFaint : kText, kBg);
+    text(640, 448, fit(l2, Font::Small, 620), Font::Small, kText, kBg);
+  }
+
+  std::string type_label_;
+  std::string opt_labels_[4];
 
   void drawActions() {
     const bool can = !busy() && g_part >= 0 && g_status.t48;
@@ -307,7 +475,7 @@ class MainScreen : public Screen {
   // The jobs whose outcome gets a sign: the ones that touch the chip.
   static bool signedJob(const std::string &t) {
     return t == "Blank check" || t == "Read" || t == "Write" || t == "Verify" || t == "Erase" ||
-           t == "Chip ID" || t == "Logic test";
+           t == "Chip ID" || t == "Logic test" || t == "Program" || t == "Firmware";
   }
 
   // A road-sign STOP octagon or a green GOOD square, 176 px, right of the log.
@@ -416,7 +584,7 @@ class MainScreen : public Screen {
       drawImage();
       d().endWrite();
     }
-    if (st.rc != 0) suggestById();
+    if (st.rc != 0 && !mode_) suggestById();
   }
 
   // minipro stops with "Invalid Chip ID: expected 0x203D, got 0x9785 (...)"
@@ -506,6 +674,94 @@ class MainScreen : public Screen {
     return name;
   }
 
+  // ---- One ROM actions --------------------------------------------------------
+
+  std::string orRomName() {
+    std::string base;
+    for (char c : onerom::displayName(onerom::serial()))
+      base += (isalnum((unsigned char)c) || c == '-' || c == '_') ? c : '_';
+    base += "_" + settings::get().onerom.type;
+    std::string name = base + ".bin";
+    for (int n = 2; fileExists(std::string(kImages) + "/" + name); n++) name = base + "_" + std::to_string(n) + ".bin";
+    return name;
+  }
+
+  // The size it serves: the active slot's, or the chosen type's.
+  uint32_t orServedSize() {
+    for (const auto &s : onerom::info().slots)
+      if (!s.plugin && s.active) return s.size;
+    return onerom::chipType(settings::get().onerom.type).size;
+  }
+
+  void orRead() {
+    prompt("Read what the One ROM serves into a file in burner/images", orRomName(),
+           [this](bool ok, const std::string &t) {
+             goMain();
+             if (!ok || t.empty()) return;
+             const std::string path = std::string(kImages) + "/" + t;
+             const uint32_t n = orServedSize();
+             auto go = [this, path, n]() {
+               goMain();
+               read_target_ = path;
+               runner::startFn([path, n] { return onerom::jobRead(path, n); }, "Read");
+             };
+             if (fileExists(path))
+               confirm("Replace file?", baseName(path) + " already exists.", "Replace", [go](bool y) {
+                 if (y) go();
+                 else goMain();
+               });
+             else
+               go();
+           });
+  }
+
+  void orProgram() {
+    const auto &o = settings::get().onerom;
+    const auto in = onerom::info();
+    const std::string latest = onerom::latestFirmware();
+    std::string body = "Program " + onerom::displayName(onerom::serial()) + "\nwith " + baseName(g_image.path) +
+                       " (" + bytesText(g_image.size) + ") as a " + o.type + ".";
+    body += "\nFirmware: " + (in.version.empty() ? std::string("?") : in.version) + " -> " +
+            (latest.empty() ? std::string("the newest") : latest) + ", with the USB plugin.";
+    const auto ct = onerom::chipType(o.type);
+    if (ct.ok && g_image.size < ct.size && !o.fit)
+      body += "\nThe image is smaller than the chip: set Fit (1) first.";
+    body += "\nEverything on the One ROM is replaced.";
+    confirm("Program One ROM", body, "Program", [this](bool y) {
+      goMain();
+      if (!y) return;
+      onerom::Program p;
+      const auto &r = settings::get().onerom;
+      p.image = g_image.path;
+      p.type = r.type;
+      for (int i = 0; i < 3; i++) p.cs[i] = r.cs[i];
+      p.fit = r.fit;
+      runner::startFn([p] { return onerom::jobProgram(p); }, "Program");
+    });
+  }
+
+  void orFirmware() {
+    const auto in = onerom::info();
+    const std::string latest = onerom::latestFirmware();
+    std::string keep;
+    int roms = 0;
+    for (const auto &s : in.slots)
+      if (!s.plugin) {
+        roms++;
+        keep = s.type + (s.file.empty() ? "" : " (" + s.file + ")");
+      }
+    std::string body = onerom::displayName(onerom::serial()) + ": firmware " +
+                       (in.version.empty() ? std::string("?") : in.version) + " -> " +
+                       (latest.empty() ? std::string("the newest") : latest) + ".";
+    if (roms == 1) body += "\nIt keeps serving its " + keep + ".";
+    else body += "\nIt has " + std::to_string(roms) + " ROM slots: only a single slot can be kept.";
+    const bool same = !latest.empty() && latest == in.version;
+    confirm(same ? "Reinstall firmware" : "Update firmware", body, same ? "Reinstall" : "Update", [](bool y) {
+      goMain();
+      if (y) runner::startFn([] { return onerom::jobUpdateFirmware(); }, "Firmware");
+    });
+  }
+
   void toggle(bool *v) {
     *v = !*v;
     settings::save();
@@ -579,6 +835,48 @@ class MainScreen : public Screen {
           if (y) run({"-E"}, "Erase");
         });
         break;
+      case kKnown: goKnown(); break;
+      case kOrNotes: editNotes(onerom::serial()); break;
+      case kOrType: goTypes(orBoard()); break;
+      case kOrInfo: runner::startFn([] {
+          const int rc = onerom::jobProbe(false);
+          if (rc == 0) onerom::jobCheckUpdates();
+          return rc;
+        }, "One ROM");
+        break;
+      case kOrIdentify: runner::startFn([] { return onerom::jobIdentify(); }, "Identify"); break;
+      case kOrVerify: {
+        const std::string path = g_image.path;
+        runner::startFn([path] { return onerom::jobVerify(path); }, "Verify");
+        break;
+      }
+      case kOrRead: orRead(); break;
+      case kOrProgram: orProgram(); break;
+      case kOrFirmware: orFirmware(); break;
+      case kOrFit: {
+        auto &r = settings::get().onerom;
+        r.fit = (r.fit + 1) % 3;
+        settings::save();
+        d().startWrite();
+        drawImage();
+        drawOrActions();
+        d().endWrite();
+        break;
+      }
+      case kOrCs1:
+      case kOrCs2:
+      case kOrCs3: {
+        auto &r = settings::get().onerom;
+        const int i = id - kOrCs1;
+        const auto ct = onerom::chipType(r.type);
+        const bool may_ignore = i < (int)ct.may_ignore.size() && ct.may_ignore[i];
+        r.cs[i] = (r.cs[i] + 1) % (may_ignore ? 3 : 2);
+        settings::save();
+        d().startWrite();
+        drawOrActions();
+        d().endWrite();
+        break;
+      }
       case kOptSize: toggle(&o.ignore_size); break;
       case kOptErase: toggle(&o.skip_erase); break;
       case kOptVerify: toggle(&o.skip_verify); break;
@@ -960,6 +1258,7 @@ FilesScreen g_files;
 class PromptScreen : public Screen {
  public:
   std::string title, value;
+  size_t max_len = 60;
   std::function<void(bool, const std::string &)> done;
 
   void draw() override {
@@ -981,7 +1280,7 @@ class PromptScreen : public Screen {
     else if (k.special == Special::Backspace) {
       if (!value.empty()) value.pop_back();
       redrawField();
-    } else if (k.ch >= ' ' && !k.ctrl && value.size() < 60) {
+    } else if (k.ch >= ' ' && !k.ctrl && value.size() < max_len) {
       value += k.ch;
       redrawField();
     }
@@ -997,7 +1296,10 @@ class PromptScreen : public Screen {
   std::vector<Button> buttons_;
   void drawField() {
     panel(180, 270, 920, 64, kPanel2, kAccent);
-    text(200, 288, fit(value + "_", Font::Body, 880), Font::Body, kText, kPanel2);
+    // A long value shows its end, where the typing is.
+    std::string v = value + "_";
+    while (textWidth(v.c_str(), Font::Body) > 880 && v.size() > 1) v.erase(0, 1);
+    text(200, 288, v, Font::Body, kText, kPanel2);
   }
   void redrawField() {
     d().startWrite();
@@ -1054,6 +1356,243 @@ class ConfirmScreen : public Screen {
 };
 
 ConfirmScreen g_confirm;
+
+// ============================================================================
+// One ROM chip types (One ROM's own list for the board, not minipro's)
+// ============================================================================
+
+class TypesScreen : public Screen {
+ public:
+  void enter(const std::string &board) {
+    board_ = board;
+    all_ = onerom::chipTypes(board);
+    query_.clear();
+    research(false);
+    const std::string cur = settings::get().onerom.type;
+    for (size_t i = 0; i < shown_.size(); i++)
+      if (shown_[i] == cur) {
+        sel_ = (int)i;
+        top_ = std::max(0, sel_ - kRows / 2);
+      }
+  }
+
+  void draw() override {
+    d().fillRect(0, 0, W, 56, kPanel);
+    d().drawFastHLine(0, 56, W, kBorder);
+    text(20, 14, "One ROM chip type", Font::Body, kText, kPanel);
+    text(W - 20, 18, "type to search  |  arrows  |  Enter picks  |  Esc goes back", Font::Small, kDim, kPanel, 2);
+    drawQuery();
+    drawList();
+  }
+
+  void key(const Key &k) override {
+    const int n = (int)shown_.size();
+    switch (k.special) {
+      case Special::Escape: goMain(); return;
+      case Special::Enter:
+        if (n) choose(shown_[sel_]);
+        return;
+      case Special::Backspace:
+        if (!query_.empty()) {
+          query_.pop_back();
+          research(true);
+        }
+        return;
+      case Special::Up: move(-1); return;
+      case Special::Down: move(1); return;
+      case Special::PageUp: move(-kRows); return;
+      case Special::PageDown: move(kRows); return;
+      default: break;
+    }
+    if (k.ch > ' ' && !k.ctrl && query_.size() < 20) {
+      query_ += (char)toupper((unsigned char)k.ch);
+      research(true);
+    }
+  }
+
+  void tap(int x, int y) override {
+    if (y < 56) return goMain();
+    if (y >= kListY && y < kListY + kRows * kRowH) {
+      const int i = top_ + (y - kListY) / kRowH;
+      if (i < (int)shown_.size()) choose(shown_[i]);
+    }
+  }
+
+  void drag(int dy) override {
+    drag_ += dy;
+    int rows = 0;
+    while (drag_ >= kRowH) { drag_ -= kRowH; rows--; }
+    while (drag_ <= -kRowH) { drag_ += kRowH; rows++; }
+    if (!rows) return;
+    const int n = (int)shown_.size();
+    top_ = std::max(0, std::min(top_ + rows, std::max(0, n - kRows)));
+    sel_ = std::max(top_, std::min(sel_, top_ + kRows - 1));
+    d().startWrite();
+    drawList();
+    d().endWrite();
+  }
+
+ private:
+  static constexpr int kListY = 148, kRowH = 50, kRows = 11;
+  std::string board_, query_;
+  std::vector<std::string> all_, shown_;
+  int sel_ = 0, top_ = 0, drag_ = 0;
+
+  void research(bool redraw) {
+    shown_.clear();
+    for (const auto &t : all_) {
+      std::string u = t;
+      for (auto &c : u) c = toupper((unsigned char)c);
+      if (u.find(query_) != std::string::npos) shown_.push_back(t);
+    }
+    sel_ = 0;
+    top_ = 0;
+    if (!redraw) return;
+    d().startWrite();
+    drawQuery();
+    drawList();
+    d().endWrite();
+  }
+
+  void move(int by) {
+    const int n = (int)shown_.size();
+    if (!n) return;
+    sel_ = std::max(0, std::min(n - 1, sel_ + by));
+    if (sel_ < top_) top_ = sel_;
+    if (sel_ >= top_ + kRows) top_ = sel_ - kRows + 1;
+    d().startWrite();
+    drawList();
+    d().endWrite();
+  }
+
+  void choose(const std::string &t) {
+    auto &r = settings::get().onerom;
+    if (r.type != t) {
+      r.type = t;
+      r.cs[0] = r.cs[1] = r.cs[2] = 0;
+    }
+    settings::save();
+    goMain();
+  }
+
+  void drawQuery() {
+    panel(16, 72, 1248, 60, kPanel2, kAccent);
+    if (query_.empty()) {
+      text(36, 88, "Type part of a name (" + std::to_string(all_.size()) + " types for " + onerom::boardLabel(board_) + ")",
+           Font::Body, kFaint, kPanel2);
+    } else {
+      text(36, 88, query_ + "_", Font::Body, kText, kPanel2);
+    }
+  }
+
+  void drawList() {
+    d().fillRect(0, kListY, W, kRows * kRowH, kBg);
+    for (int r = 0; r < kRows; r++) {
+      const int i = top_ + r;
+      if (i >= (int)shown_.size()) break;
+      const auto ct = onerom::chipType(shown_[i]);
+      const int y = kListY + r * kRowH;
+      const bool s = i == sel_;
+      const uint32_t bg = s ? kAccentDim : (r % 2 ? kBg : kPanel);
+      d().fillRect(16, y, 1248, kRowH - 2, bg);
+      text(36, y + 12, shown_[i], Font::Body, kText, bg);
+      std::string lines;
+      for (const auto &l : ct.config_lines) lines += (lines.empty() ? "you set " : ", ") + l;
+      text(620, y + 15, lines, Font::Small, s ? kText : kDim, bg);
+      text(1244, y + 15, bytesText(ct.size), Font::Small, s ? kText : kDim, bg, 2);
+    }
+    if (shown_.empty()) text(W / 2, kListY + 40, "No chip types match", Font::Body, kDim, kBg, 1);
+  }
+};
+
+TypesScreen g_types;
+
+// ============================================================================
+// Known One ROMs: every serial there are notes for
+// ============================================================================
+
+class KnownScreen : public Screen {
+ public:
+  void enter() {
+    list_ = onerom::known();
+    sel_ = 0;
+    top_ = 0;
+  }
+
+  void draw() override {
+    d().fillRect(0, 0, W, 56, kPanel);
+    d().drawFastHLine(0, 56, W, kBorder);
+    text(20, 14, "Known One ROMs", Font::Body, kText, kPanel);
+    text(W - 20, 18, "arrows  |  Enter edits name and notes  |  Esc goes back", Font::Small, kDim, kPanel, 2);
+    drawList();
+  }
+
+  void key(const Key &k) override {
+    switch (k.special) {
+      case Special::Escape: goMain(); return;
+      case Special::Enter:
+        if (!list_.empty()) editNotes(list_[sel_].first);
+        return;
+      case Special::Up: move(-1); return;
+      case Special::Down: move(1); return;
+      default: return;
+    }
+  }
+
+  void tap(int x, int y) override {
+    if (y < 56) return goMain();
+    if (y >= kListY && y < kListY + kRows * kRowH) {
+      const int i = top_ + (y - kListY) / kRowH;
+      if (i < (int)list_.size()) editNotes(list_[i].first);
+    }
+  }
+
+ private:
+  static constexpr int kListY = 72, kRowH = 92, kRows = 6;
+  std::vector<std::pair<std::string, onerom::Notes>> list_;
+  int sel_ = 0, top_ = 0;
+
+  void move(int by) {
+    const int n = (int)list_.size();
+    if (!n) return;
+    sel_ = std::max(0, std::min(n - 1, sel_ + by));
+    if (sel_ < top_) top_ = sel_;
+    if (sel_ >= top_ + kRows) top_ = sel_ - kRows + 1;
+    d().startWrite();
+    drawList();
+    d().endWrite();
+  }
+
+  void drawList() {
+    d().fillRect(0, kListY, W, H - kListY, kBg);
+    const std::string here = onerom::serial();
+    for (int r = 0; r < kRows; r++) {
+      const int i = top_ + r;
+      if (i >= (int)list_.size()) break;
+      const auto &ser = list_[i].first;
+      const auto &n = list_[i].second;
+      const int y = kListY + r * kRowH;
+      const bool s = i == sel_;
+      const uint32_t bg = s ? kAccentDim : (r % 2 ? kBg : kPanel);
+      d().fillRect(16, y, 1248, kRowH - 4, bg);
+      text(36, y + 10, fit(n.name.empty() ? "(no name)" : n.name, Font::Body, 700), Font::Body,
+           n.name.empty() ? kDim : kText, bg);
+      text(1244, y + 14, ser + (ser == here ? "  (connected)" : ""), Font::Small, ser == here ? kGood : kDim, bg, 2);
+      std::string l2 = n.seen.empty() ? "" : "seen " + n.seen;
+      if (!n.image.empty()) l2 += (l2.empty() ? "" : "  |  ") + n.image + (n.type.empty() ? "" : " as " + n.type);
+      if (!n.firmware.empty()) l2 += "  |  firmware " + n.firmware;
+      std::string notes = n.notes;
+      for (auto &c : notes)
+        if (c == '\n' || c == '\r') c = ' ';
+      text(36, y + 44, fit(l2, Font::Small, 1200), Font::Small, s ? kText : kDim, bg);
+      text(36, y + 66, fit(notes, Font::Small, 1200), Font::Small, s ? kText : kFaint, bg);
+    }
+    if (list_.empty())
+      text(W / 2, kListY + 60, "None yet: a One ROM is remembered when it is plugged in", Font::Body, kDim, kBg, 1);
+  }
+};
+
+KnownScreen g_known;
 
 uint32_t crcFile(const std::string &path, uint32_t *size, bool *ok) {
   *ok = false;
@@ -1152,6 +1691,54 @@ void goFiles() {
   g_files.enter();
   show(&g_files);
 }
+
+namespace {
+
+void goKnown() {
+  g_known.enter();
+  show(&g_known);
+}
+
+void goTypes(const std::string &board) {
+  g_types.enter(board);
+  show(&g_types);
+}
+
+// Name, then notes, for the One ROM with this serial (attached or not).
+// Notes are one line here; the .txt in burner/onerom/devices can be edited
+// with more from the browser.
+void editNotes(const std::string &serial) {
+  if (serial.empty()) return;
+  onerom::Notes n;
+  onerom::loadNotes(serial, &n);
+  g_prompt.max_len = 60;
+  prompt("Name for One ROM " + serial, n.name, [serial](bool ok, const std::string &name) {
+    if (!ok) return goMain();
+    onerom::Notes n2;
+    onerom::loadNotes(serial, &n2);
+    n2.name = name;
+    onerom::saveNotes(serial, n2);
+    std::string flat = n2.notes;
+    for (auto &c : flat)
+      if (c == '\n') c = '|';
+    g_prompt.max_len = 300;
+    prompt("Notes: where it is, what it is for ( | starts a new line)", flat, [serial](bool ok2, const std::string &t) {
+      g_prompt.max_len = 60;
+      if (ok2) {
+        onerom::Notes n3;
+        onerom::loadNotes(serial, &n3);
+        std::string notes = t;
+        for (auto &c : notes)
+          if (c == '|') c = '\n';
+        n3.notes = notes;
+        onerom::saveNotes(serial, n3);
+      }
+      goMain();
+    });
+  });
+}
+
+}  // namespace
 
 void prompt(const std::string &title, const std::string &initial,
             std::function<void(bool, const std::string &)> done) {

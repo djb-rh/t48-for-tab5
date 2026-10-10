@@ -19,6 +19,7 @@
 
 #include "app.h"
 #include "parts.h"
+#include "onerom.h"
 #include "runner.h"
 #include "settings.h"
 #include "web_page.h"
@@ -212,6 +213,58 @@ esp_err_t handleState(httpd_req_t *req) {
                   ",\"busy\":" + (st.busy ? "true" : "false") + ",\"job\":" + jsonStr(st.title) + "}";
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, j.c_str());
+}
+
+// ---- One ROM names and notes -------------------------------------------------
+
+std::string jsonText(const std::string &v) {
+  std::string o = "\"";
+  for (char c : v) {
+    if (c == '"' || c == '\\') o += '\\', o += c;
+    else if (c == '\n') o += "\\n";
+    else if ((unsigned char)c >= 0x20) o += c;
+  }
+  return o + "\"";
+}
+
+esp_err_t handleOneRomList(httpd_req_t *req) {
+  std::string j = "{\"connected\":" + jsonText(onerom::serial()) + ",\"devices\":[";
+  bool first = true;
+  for (const auto &d : onerom::known()) {
+    const auto &n = d.second;
+    j += std::string(first ? "" : ",") + "{\"serial\":" + jsonText(d.first) + ",\"name\":" + jsonText(n.name) +
+         ",\"notes\":" + jsonText(n.notes) + ",\"seen\":" + jsonText(n.seen) + ",\"programmed\":" +
+         jsonText(n.programmed) + ",\"image\":" + jsonText(n.image) + ",\"type\":" + jsonText(n.type) +
+         ",\"firmware\":" + jsonText(n.firmware) + ",\"board\":" + jsonText(onerom::boardLabel(n.board)) + "}";
+    first = false;
+  }
+  j += "]}";
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, j.c_str());
+}
+
+// POST /api/onerom?serial=X, body: the name on the first line, the notes after.
+esp_err_t handleOneRomSave(httpd_req_t *req) {
+  const std::string serial = query(req, "serial");
+  bool hex = !serial.empty() && serial.size() <= 32;
+  for (char c : serial) hex = hex && isxdigit((unsigned char)c);
+  if (!hex) return fail(req, "400 Bad Request", "bad serial");
+  if (req->content_len > 4096) return fail(req, "413 Payload Too Large", "notes are limited to 4 KB");
+  std::string body(req->content_len, '\0');
+  size_t got = 0;
+  while (got < body.size()) {
+    const int n = httpd_req_recv(req, &body[got], body.size() - got);
+    if (n <= 0) return fail(req, "500 Internal Server Error", "upload interrupted");
+    got += n;
+  }
+  body.erase(std::remove(body.begin(), body.end(), '\r'), body.end());
+  const size_t nl = body.find('\n');
+  onerom::Notes n;
+  onerom::loadNotes(serial, &n);
+  n.name = body.substr(0, nl);
+  n.notes = nl == std::string::npos ? "" : body.substr(nl + 1);
+  if (!onerom::saveNotes(serial, n)) return fail(req, "500 Internal Server Error", "could not save");
+  return ok(req);
 }
 
 esp_err_t handleList(httpd_req_t *req) {
@@ -492,6 +545,7 @@ void startServer() {
       {"/api/put", HTTP_PUT, handlePut},     {"/api/delete", HTTP_POST, handleDelete},
       {"/api/mkdir", HTTP_POST, handleMkdir}, {"/api/rename", HTTP_POST, handleRename},
       {"/api/use", HTTP_POST, handleUse},    {"/api/pace", HTTP_POST, handlePace},
+      {"/api/onerom", HTTP_GET, handleOneRomList}, {"/api/onerom", HTTP_POST, handleOneRomSave},
   };
   for (auto &r : routes) {
     httpd_uri_t u = {};
@@ -600,6 +654,9 @@ void loop() {
       g_state = State::Connected;
       g_ever_connected = true;
       startServer();
+      // The clock, for the One ROM notes' dates. US Eastern (the
+      // workbench's); the card's files are stamped in it too.
+      configTzTime("EST5EDT,M3.2.0,M11.1.0", "pool.ntp.org", "time.google.com");
       runner::note("Wi-Fi: joined %s, files at http://%s/", g_ssid.c_str(), WiFi.localIP().toString().c_str());
       static bool reported = false;
       if (!reported) {

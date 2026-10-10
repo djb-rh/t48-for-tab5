@@ -16,10 +16,19 @@ void powerPort(bool on);
 bool attached();
 // Every USB log line since boot (console 'usb').
 std::string trace();
-// Spike: a One ROM on the port, and one picoboot command to it (data is
-// read for commands with bit 7 set, written otherwise). 0 on success.
+// A One ROM on the port: running (its USB plugin) or in a bootloader. The
+// serial is the RP2350's chip ID, the same in both. The generation bumps on
+// every attach, so a reboot can be waited out.
 bool oneRomAttached();
-int picoboot(uint8_t cmd_id, const void *args, uint8_t args_len, uint8_t *data, uint32_t len);
+bool oneRomBootloader();
+uint32_t oneRomGeneration();
+std::string oneRomSerial();
+// One picoboot command (data is read for commands with bit 7 set, written
+// otherwise). One ROM's own commands use their own magic. 0 on success.
+constexpr uint32_t kPicobootMagic = 0x431fd10b;
+constexpr uint32_t kOneRomMagic = 'O' | ('N' << 8) | ('E' << 16) | ('R' << 24);
+int picoboot(uint8_t cmd_id, const void *args, uint8_t args_len, uint8_t *data, uint32_t len,
+             uint32_t magic = kPicobootMagic);
 
 // Transfer timing since the last reset, for finding where a job's time goes.
 struct Stats {

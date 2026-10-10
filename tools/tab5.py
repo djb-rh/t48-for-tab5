@@ -26,7 +26,11 @@ import serial
 
 def open_port():
     s = serial.Serial()
-    s.port = sorted(glob.glob("/dev/cu.usbmodem*"))[0]
+    # The Tab5's own port (Espressif's VID); a One ROM on the same Mac shows
+    # up as a usbmodem too.
+    from serial.tools import list_ports
+    ports = [p.device for p in list_ports.comports() if p.vid == 0x303A]
+    s.port = ports[0] if ports else sorted(glob.glob("/dev/cu.usbmodem*"))[0]
     s.baudrate = 115200
     s.timeout = 0.2
     s.rts = False

@@ -10,6 +10,11 @@ Programming is done by [minipro](https://gitlab.com/DavidGriffith/minipro),
 compiled unchanged and running on the Tab5 itself; only its USB layer is
 replaced, so it behaves exactly as it does on a desktop.
 
+It also programs **[One ROM](https://onerom.org)** (the RP2350 "Fire" boards)
+over USB, with no T48: plug a One ROM into the same USB-A port with a
+USB-A to USB-C cable (one that carries data) and the main screen becomes a One
+ROM programmer working from the same images. See [One ROM](#one-rom).
+
 ![Main screen](docs/main.png)
 
 ## What it does
@@ -92,6 +97,15 @@ flasher.
     cd t48-for-tab5
     pio run -e app -t upload
 
+The One ROM image builder is Rust (`onerom-ffi/`), built by a pre-script and
+linked in. It needs [rustup](https://rustup.rs) and the P4's target:
+
+    rustup target add riscv32imafc-unknown-none-elf
+
+`cargo test --features std` in `onerom-ffi/` checks its output against images
+built by the One ROM CLI (put the reference files in `scratch/onerom`, see
+`onerom-ffi/tests/reference.rs`).
+
 The app occupies the first 6 MB of flash (`partitions_app.csv`).
 
 ## The SD card
@@ -138,6 +152,48 @@ or `"text"`), Ctrl+N next, Ctrl+Z undo, Ctrl+S save, Ctrl+A save as, Esc.
 The file manager is at the address shown in the header once the Tab5 is on
 Wi-Fi, and at `http://192.168.4.1/files` over the setup hotspot.
 
+## One ROM
+
+A One ROM on the USB-A port (instead of the T48) turns the main screen into
+its programmer. The image library, image picker and hex editor are the same;
+the chip panel shows the One ROM: its name, board, firmware and what it serves.
+
+| Key | | Key | |
+|---|---|---|---|
+| O | name and notes | W | program |
+| P | chip type (One ROM's list) | R | read what it serves |
+| F | choose image | V | verify what it serves |
+| H | hex editor | I | info (slots, newest firmware) |
+| 1 | fit a smaller image (repeat / pad) | U | update its firmware |
+| 2-4 | select-line polarity (23xx mask ROMs) | D | identify (flash its LED) |
+| K | known One ROMs (both modes) | | |
+
+- **Program** builds a One ROM image on the Tab5 from the chosen file and
+  chip type, with the newest One ROM firmware for the board and the USB
+  plugin (so it stays reachable over USB while it runs), flashes it through
+  the RP2350's bootloader, verifies the flash, restarts it and checks that
+  it serves the file. About 10 s.
+- **Firmware** updates the firmware and keeps what it serves: the ROM is read
+  off the device first and built back in. (Single-slot One ROMs; a board
+  with several jumper-selected slots is reprogrammed with Program.)
+- **Read** and **Verify** work on the ROM it is serving, live, while it runs.
+- **Identify** flashes its status LED for 10 s, to find which one is on the
+  end of a cable.
+- **Names and notes**: every One ROM is known by its serial (the RP2350's
+  chip ID, which never changes). Give it a name and notes (where it is
+  fitted, what it is for) and they come up whenever it is plugged in, so a
+  board buried in a cabinet with only a USB-C cable hanging out still says
+  what it is. They live in `burner/onerom/devices/<serial>.txt`, with when it
+  was last seen and programmed and with what, and can be edited in the
+  browser page (One ROMs, below the files) as well as on the Tab5.
+
+Images are built by One ROM's own generator ([onerom-gen](https://github.com/piersfinlayson/one-rom),
+MIT), compiled for the Tab5 (`onerom-ffi/`), so they are byte-for-byte what
+the One ROM CLI builds from the same file. The firmware, the USB plugin and
+the release lists come from images.onerom.org over Wi-Fi (TLS checked, the
+plugin also by SHA-256) and are kept in `burner/onerom/cache`, so programming
+works offline once they have been fetched.
+
 ## Development
 
 - `src/app` is the app, `src/core` the USB layer (`usb_esp.cpp`, the ESP32-P4
@@ -183,4 +239,6 @@ Lessons from getting here:
 
 GPL-3.0-or-later (see [LICENSE](LICENSE)), because it includes minipro, which
 is GPL-3.0-or-later. Copyright (C) 2026 Donald Barnes. minipro is copyright
-its authors; see `third_party/minipro`.
+its authors; see `third_party/minipro`. One ROM's generator and firmware
+parser (fetched by Cargo, pinned in `onerom-ffi/Cargo.toml`) are MIT,
+copyright Piers Finlayson.

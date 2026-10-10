@@ -33,8 +33,10 @@
 #include <vector>
 
 #include "keyboard.h"
+#include "onerom.h"
 #include "runner.h"
 #include "../core/usb_esp.h"
+#include "../core/onerom_ffi.h"
 #include "app.h"
 #include "parts.h"
 #include "sdcard.h"
@@ -258,6 +260,40 @@ void run(const std::string &line) {
     if (!runner::start(args, title.c_str())) done(1);
     return;   // the runner prints "== done" when minipro returns
   }
+  if (c == "or" && a.size() > 1) {
+    // One ROM jobs, as the screen runs them (tests):
+    //   or info | check | update | identify | notes
+    //   or program <path> <type> [fit 0/1/2] | or read <path> <size> | or verify <path>
+    const std::string &v = a[1];
+    bool started = false;
+    if (v == "info") started = runner::startFn([] { return onerom::jobProbe(false); }, "One ROM");
+    else if (v == "check") started = runner::startFn([] { return onerom::jobCheckUpdates(); }, "Check");
+    else if (v == "update") started = runner::startFn([] { return onerom::jobUpdateFirmware(); }, "Firmware");
+    else if (v == "identify") started = runner::startFn([] { return onerom::jobIdentify(); }, "Identify");
+    else if (v == "program" && a.size() > 3) {
+      onerom::Program p;
+      p.image = a[2];
+      p.type = a[3];
+      p.fit = a.size() > 4 ? atoi(a[4].c_str()) : 0;
+      started = runner::startFn([p] { return onerom::jobProgram(p); }, "Program");
+    } else if (v == "read" && a.size() > 3) {
+      const std::string path = a[2];
+      const uint32_t n = strtoul(a[3].c_str(), nullptr, 0);
+      started = runner::startFn([path, n] { return onerom::jobRead(path, n); }, "Read");
+    } else if (v == "verify" && a.size() > 2) {
+      const std::string path = a[2];
+      started = runner::startFn([path] { return onerom::jobVerify(path); }, "Verify");
+    } else if (v == "notes") {
+      onerom::Notes n;
+      const bool ok = onerom::loadNotes(onerom::serial(), &n);
+      Serial.printf("serial %s, notes %s: name '%s', seen '%s', programmed '%s', image '%s', type '%s', fw '%s'\n%s\n",
+                    onerom::serial().c_str(), ok ? "found" : "none", n.name.c_str(), n.seen.c_str(),
+                    n.programmed.c_str(), n.image.c_str(), n.type.c_str(), n.firmware.c_str(), n.notes.c_str());
+      return done(0);
+    }
+    if (!started) done(1);
+    return;
+  }
   if (c == "ls") return done(cmdLs(a.size() > 1 ? a[1] : "/sdcard/burner"));
   if (c == "crc" && a.size() > 1) return done(cmdCrc(a[1]));
   if (c == "get" && a.size() > 1) return done(cmdGet(a[1]));
@@ -408,6 +444,14 @@ void run(const std::string &line) {
     delay(4000);
     esp_log_level_set("*", ESP_LOG_NONE);
     Serial.print(usbdev::trace().c_str());
+    return done(0);
+  }
+  if (c == "ortver") {   // onerom-ffi smoke test
+    static char b[512];
+    ort_versions(b, sizeof(b));
+    Serial.print(b);
+    ort_chip_types("fire-28-c", b, sizeof(b));
+    Serial.print(b);
     return done(0);
   }
   if (c == "usb") {

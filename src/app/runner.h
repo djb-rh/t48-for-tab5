@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,10 @@ void begin();
 // Starts minipro with these arguments (argv[0] is supplied). False if a run
 // is already going. `title` names the job on screen ("Write", "Read"...).
 bool start(const std::vector<std::string> &args, const char *title);
+// Runs fn in the same task instead (the One ROM jobs); its return value is
+// the job's rc, and it reports through note() and setPhase().
+bool startFn(std::function<int()> fn, const char *title);
+void setPhase(const std::string &phase, int percent = -1);
 bool busy();
 
 struct Status {
