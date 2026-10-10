@@ -351,6 +351,53 @@ void run(const std::string &line) {
     }
     return done(r ? 1 : 0);
   }
+  if (c == "pbtest" && a.size() > 2) {
+    // pbtest <hex addr> <len>: in BOOTSEL, save the region, erase it, write a
+    // pattern, verify, then erase and write the original back and verify.
+    const uint32_t base = (uint32_t)strtoul(a[1].c_str(), nullptr, 16), len = (uint32_t)strtoul(a[2].c_str(), nullptr, 0);
+    if (len == 0 || len > 65536 || (base | len) & 0xFFF) return done(2);
+    static uint8_t *orig = (uint8_t *)heap_caps_malloc(65536 + 64, MALLOC_CAP_SPIRAM);
+    static uint8_t *pat = (uint8_t *)heap_caps_malloc(65536 + 64, MALLOC_CAP_SPIRAM);
+    static uint8_t *back = (uint8_t *)heap_caps_malloc(65536 + 64, MALLOC_CAP_SPIRAM);
+    auto rd = [&](uint8_t *b) {
+      for (uint32_t o = 0; o < len; o += 4096) {
+        const uint32_t ar[2] = {base + o, 4096};
+        if (usbdev::picoboot(0x84, ar, 8, b + o, 4096)) return false;
+      }
+      return true;
+    };
+    auto program = [&](const uint8_t *b, uint32_t *erase_ms, uint32_t *write_ms) {
+      uint32_t t0 = millis();
+      const uint32_t er[2] = {base, len};
+      if (usbdev::picoboot(0x03, er, 8, nullptr, 0)) return false;
+      *erase_ms = millis() - t0;
+      t0 = millis();
+      for (uint32_t o = 0; o < len; o += 4096) {
+        const uint32_t ar[2] = {base + o, 4096};
+        if (usbdev::picoboot(0x05, ar, 8, (uint8_t *)b + o, 4096)) return false;
+      }
+      *write_ms = millis() - t0;
+      return true;
+    };
+    const uint8_t excl = 1;
+    int r = usbdev::picoboot(0x01, &excl, 1, nullptr, 0);
+    Serial.printf("exclusive access: rc %d\n", r);
+    r = usbdev::picoboot(0x06, nullptr, 0, nullptr, 0);
+    Serial.printf("exit xip: rc %d\n", r);
+    if (!rd(orig)) { Serial.println("read original FAILED"); return done(1); }
+    Serial.printf("original crc32 %08x\n", (unsigned)esp_rom_crc32_le(0, orig, len));
+    for (uint32_t i = 0; i < len; i++) pat[i] = (uint8_t)(i * 7 + (i >> 8) * 13 + 0x5A);
+    uint32_t em, wm;
+    bool ok = program(pat, &em, &wm) && rd(back);
+    const bool pat_ok = ok && !memcmp(back, pat, len);
+    Serial.printf("pattern: erase %u ms, write %u ms, verify %s (crc32 %08x)\n", (unsigned)em, (unsigned)wm,
+                  pat_ok ? "OK" : "FAILED", (unsigned)esp_rom_crc32_le(0, back, len));
+    ok = program(orig, &em, &wm) && rd(back);
+    const bool orig_ok = ok && !memcmp(back, orig, len);
+    Serial.printf("restore: erase %u ms, write %u ms, verify %s (crc32 %08x)\n", (unsigned)em, (unsigned)wm,
+                  orig_ok ? "OK" : "FAILED", (unsigned)esp_rom_crc32_le(0, back, len));
+    return done(pat_ok && orig_ok ? 0 : 1);
+  }
   if (c == "usbcycle") {
     // Spike: power-cycle the USB-A port with the host stack's own logging on.
     for (const char *t : {"USBH", "HUB", "ENUM", "USB_HOST", "HCD DWC", "EXT_HUB", "EXT_PORT", "USB PHY"})
