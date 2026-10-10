@@ -20,6 +20,7 @@
 #include <usb/usb_host.h>
 
 #include <cstring>
+#include <string>
 
 extern "C" {
 #include "../../third_party/minipro/src/usb.h"
@@ -29,6 +30,14 @@ namespace usbdev {
 namespace {
 
 constexpr uint16_t kVid = 0xA466, kPid = 0x0A53;   // TL866II+ / T48 / T56
+// One ROM (spike): running firmware with the USB plugin, its commissioned
+// bootloader, and an uncommissioned RP2350's own bootloader.
+bool isOneRom(uint16_t v, uint16_t p) {
+  return (v == 0x1209 && (p == 0xF540 || p == 0xF542)) || (v == 0x2E8A && p == 0x000F);
+}
+volatile bool g_onerom = false;
+uint8_t g_intf = 0;                    // the claimed interface
+uint8_t g_pb_out = 0x03, g_pb_in = 0x83;   // its bulk endpoints (the bootloader's IN is 84)
 constexpr uint32_t kTimeoutMs = 5000;              // usb_nix.c MP_USBTIMEOUT
 constexpr uint32_t kReadTimeoutMs = 360000;        // usb_nix.c MP_USB_READ_TIMEOUT
 
@@ -40,6 +49,8 @@ volatile bool g_gone = false;
 uint16_t g_mps[16][2];                 // [ep number][0 out, 1 in]
 volatile bool g_registered = false;
 LogFn g_log = nullptr;
+std::string g_trace;                   // every log line, for the console's 'usb'
+volatile uint8_t g_other_addr = 0;     // a non-XGecu device, already described
 
 // One transfer at a time: minipro is strictly request/response.
 usb_transfer_t *g_xfer = nullptr;
@@ -65,22 +76,67 @@ void log(const char *fmt, ...) {
   va_start(ap, fmt);
   vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
+  if (g_trace.size() < 16384) g_trace += std::string(buf) + "\n";
   if (g_log) g_log(buf);
+}
+
+void strDesc(const char *what, const usb_str_desc_t *sd) {
+  if (!sd) return;
+  char b[64];
+  int n = 0;
+  for (int i = 0; i < (sd->bLength - 2) / 2 && n < 63; i++) b[n++] = (char)(sd->wData[i] & 0x7F);
+  b[n] = 0;
+  log("  %s \"%s\"", what, b);
+}
+
+// Spike: everything about a device that is not the T48 (One ROM work).
+void describe(usb_device_handle_t dev) {
+  const usb_device_desc_t *dd = nullptr;
+  usb_host_get_device_descriptor(dev, &dd);
+  usb_device_info_t info = {};
+  usb_host_device_info(dev, &info);
+  log("usb: device %04x:%04x bcdUSB %04x bcdDevice %04x class %02x/%02x/%02x ep0 %u, %s speed, %u configs",
+      dd->idVendor, dd->idProduct, dd->bcdUSB, dd->bcdDevice, dd->bDeviceClass, dd->bDeviceSubClass,
+      dd->bDeviceProtocol, dd->bMaxPacketSize0, info.speed == USB_SPEED_HIGH ? "high" : info.speed == USB_SPEED_FULL ? "full" : "low",
+      dd->bNumConfigurations);
+  strDesc("manufacturer", info.str_desc_manufacturer);
+  strDesc("product", info.str_desc_product);
+  strDesc("serial", info.str_desc_serial_num);
+  const usb_config_desc_t *cd = nullptr;
+  if (usb_host_get_active_config_descriptor(dev, &cd) != ESP_OK || !cd) return;
+  log("  config %u: %u interfaces, %u bytes, attr %02x, %u mA", cd->bConfigurationValue, cd->bNumInterfaces,
+      cd->wTotalLength, cd->bmAttributes, cd->bMaxPower * 2);
+  const uint8_t *p = (const uint8_t *)cd;
+  for (int off = 0; off < cd->wTotalLength && p[off];) {
+    const uint8_t len = p[off], type = p[off + 1];
+    if (type == 0x04)
+      log("  intf %u alt %u: %u eps, class %02x/%02x/%02x, str %u", p[off + 2], p[off + 3], p[off + 4], p[off + 5],
+          p[off + 6], p[off + 7], p[off + 8]);
+    else if (type == 0x05)
+      log("    ep %02x attr %02x mps %u interval %u", p[off + 2], p[off + 3], p[off + 4] | (p[off + 5] << 8), p[off + 6]);
+    else if (type == 0x0B)
+      log("  iad: first intf %u, %u intfs, class %02x/%02x/%02x", p[off + 2], p[off + 3], p[off + 4], p[off + 5], p[off + 6]);
+    else if (type != 0x02)
+      log("    desc type %02x len %u", type, len);
+    off += len;
+  }
 }
 
 void onXfer(usb_transfer_t *) { xSemaphoreGive(g_done); }
 
-void readEndpoints() {
+void readEndpoints(uint8_t want) {
   const usb_config_desc_t *cd = nullptr;
   usb_host_get_active_config_descriptor(g_dev, &cd);
   memset(g_mps, 0, sizeof(g_mps));
   int off = 0;
-  const usb_intf_desc_t *intf = usb_parse_interface_descriptor(cd, 0, 0, &off);
+  const usb_intf_desc_t *intf = usb_parse_interface_descriptor(cd, want, 0, &off);
   if (!intf) return;
   for (int e = 0; e < intf->bNumEndpoints; e++) {
     int eoff = off;
     const usb_ep_desc_t *ep = usb_parse_endpoint_descriptor_by_index(intf, e, cd->wTotalLength, &eoff);
-    if (ep) g_mps[ep->bEndpointAddress & 0x0F][ep->bEndpointAddress & 0x80 ? 1 : 0] = ep->wMaxPacketSize & 0x7FF;
+    if (!ep) continue;
+    g_mps[ep->bEndpointAddress & 0x0F][ep->bEndpointAddress & 0x80 ? 1 : 0] = ep->wMaxPacketSize & 0x7FF;
+    if ((ep->bmAttributes & 3) == 2) (ep->bEndpointAddress & 0x80 ? g_pb_in : g_pb_out) = ep->bEndpointAddress;
   }
 }
 
@@ -96,27 +152,37 @@ void openDevice(uint8_t addr) {
   usb_host_get_device_descriptor(g_dev, &dd);
   usb_device_info_t info = {};
   usb_host_device_info(g_dev, &info);
-  if (dd->idVendor != kVid || dd->idProduct != kPid) {
+  const bool onerom = isOneRom(dd->idVendor, dd->idProduct);
+  if (!onerom && (dd->idVendor != kVid || dd->idProduct != kPid)) {
     log("usb: %04x:%04x is not an XGecu programmer", dd->idVendor, dd->idProduct);
+    describe(g_dev);
+    g_other_addr = addr;
     usb_host_device_close(g_client, g_dev);
     g_dev = nullptr;
     return;
   }
-  readEndpoints();
-  if (usb_host_interface_claim(g_client, g_dev, 0, 0) != ESP_OK) {
-    log("usb: claiming interface 0 failed");
+  if (onerom) describe(g_dev);
+  // picoboot is interface 1 when there are several (0 in a bare bootloader).
+  const usb_config_desc_t *cd = nullptr;
+  usb_host_get_active_config_descriptor(g_dev, &cd);
+  g_intf = onerom && cd && cd->bNumInterfaces > 1 ? 1 : 0;
+  g_onerom = onerom;
+  readEndpoints(g_intf);
+  if (usb_host_interface_claim(g_client, g_dev, g_intf, 0) != ESP_OK) {
+    log("usb: claiming interface %u failed", g_intf);
     usb_host_device_close(g_client, g_dev);
     g_dev = nullptr;
     return;
   }
   g_claimed = true;
-  log("usb: programmer attached, %s speed", info.speed == USB_SPEED_HIGH ? "high" : "FULL");
+  log("usb: %s attached, %s speed", onerom ? "One ROM" : "programmer", info.speed == USB_SPEED_HIGH ? "high" : "full");
 }
 
 void closeDevice() {
   if (!g_dev) return;
   g_claimed = false;
-  usb_host_interface_release(g_client, g_dev, 0);
+  usb_host_interface_release(g_client, g_dev, g_intf);
+  g_onerom = false;
   usb_host_device_close(g_client, g_dev);
   g_dev = nullptr;
   log("usb: programmer detached");
@@ -124,7 +190,10 @@ void closeDevice() {
 
 void onClientEvent(const usb_host_client_event_msg_t *msg, void *) {
   if (msg->event == USB_HOST_CLIENT_EVENT_NEW_DEV) g_pending_addr = msg->new_dev.address;
-  else if (msg->event == USB_HOST_CLIENT_EVENT_DEV_GONE) g_gone = true;
+  else if (msg->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
+    g_gone = true;
+    g_other_addr = 0;
+  }
 }
 
 // Called mid-enumeration; logs how far the handshake got.
@@ -162,7 +231,8 @@ void clientTask(void *) {
       last_poll = millis();
       uint8_t addrs[4];
       int n = 0;
-      if (usb_host_device_addr_list_fill(sizeof(addrs), addrs, &n) == ESP_OK && n > 0) g_pending_addr = addrs[0];
+      if (usb_host_device_addr_list_fill(sizeof(addrs), addrs, &n) == ESP_OK && n > 0 && addrs[0] != g_other_addr)
+        g_pending_addr = addrs[0];
     }
     if (g_gone) {
       g_gone = false;
@@ -264,7 +334,73 @@ void powerPort(bool on) {
   if (e != ESP_OK) log("usb: root port power %d failed (%d)", (int)on, (int)e);
 }
 
-bool attached() { return g_claimed; }
+bool attached() { return g_claimed && !g_onerom; }
+bool oneRomAttached() { return g_claimed && g_onerom; }
+
+// ---- picoboot (spike) ------------------------------------------------------
+// A control transfer on EP0, blocking. data is in or out per bmRequestType.
+int control(uint8_t type, uint8_t req, uint16_t value, uint16_t index, uint8_t *data, uint16_t len) {
+  if (!g_dev) return -1;
+  static usb_transfer_t *x = nullptr;
+  if (!x && usb_host_transfer_alloc(64 + 8, 0, &x) != ESP_OK) return -1;
+  auto *sp = (usb_setup_packet_t *)x->data_buffer;
+  sp->bmRequestType = type;
+  sp->bRequest = req;
+  sp->wValue = value;
+  sp->wIndex = index;
+  sp->wLength = len;
+  if (!(type & 0x80) && len) memcpy(x->data_buffer + 8, data, len);
+  x->num_bytes = 8 + len;
+  x->device_handle = g_dev;
+  x->bEndpointAddress = 0;
+  x->callback = onXfer;
+  x->timeout_ms = 0;
+  xSemaphoreTake(g_done, 0);
+  if (usb_host_transfer_submit_control(g_client, x) != ESP_OK) return -2;
+  if (xSemaphoreTake(g_done, pdMS_TO_TICKS(kTimeoutMs)) != pdTRUE) return -3;
+  if (x->status != USB_TRANSFER_STATUS_COMPLETED) return -4;
+  if ((type & 0x80) && len) memcpy(data, x->data_buffer + 8, len);
+  return 0;
+}
+
+// After a stall: the command's status, then picoboot's INTERFACE_RESET and
+// the halts cleared on both ends.
+void picobootRecover() {
+  uint8_t st[16] = {};
+  if (control(0xC1, 0x42, 0, g_intf, st, 16) == 0)
+    log("pb: status token %u code %u cmd %02x busy %u", st[0] | st[1] << 8, st[4], st[8], st[9]);
+  control(0x41, 0x41, 0, g_intf, nullptr, 0);
+  for (uint8_t ep : {g_pb_out, g_pb_in}) {
+    control(0x02, 0x01, 0, ep, nullptr, 0);   // CLEAR_FEATURE(ENDPOINT_HALT)
+    usb_host_endpoint_clear(g_dev, ep);
+  }
+}
+// 32-byte command on EP 03; data on 83 (in) or 03 (out); then the other
+// direction carries a zero-length acknowledgement.
+int picoboot(uint8_t cmd_id, const void *args, uint8_t args_len, uint8_t *data, uint32_t len) {
+  if (!oneRomAttached()) return -1;
+  static uint32_t token = 1;
+  uint8_t c[32] = {};
+  const uint32_t magic = 0x431fd10b, tok = token++;
+  memcpy(c, &magic, 4);
+  memcpy(c + 4, &tok, 4);
+  c[8] = cmd_id;
+  c[9] = args_len;
+  memcpy(c + 12, &len, 4);
+  if (args_len) memcpy(c + 16, args, args_len);
+  int got = 0;
+  const bool in = cmd_id & 0x80;
+  int rc = 0;
+  uint8_t z[64];
+  int data_got = 0;
+  if (transfer(g_pb_out, c, 32, &got, kTimeoutMs)) rc = -2;
+  else if (len && transfer(in ? g_pb_in : g_pb_out, data, len, &data_got, kTimeoutMs)) rc = -3;
+  else if (transfer(in && len ? g_pb_out : g_pb_in, z, 0, &got, kTimeoutMs)) rc = -4;   // ack
+  if (rc == 0 && in && len && data_got != (int)len) log("pb: short read %d/%u", data_got, (unsigned)len);
+  if (rc) picobootRecover();
+  return rc;
+}
+std::string trace() { return g_trace; }
 
 void resetStats() { memset(g_stats, 0, sizeof(g_stats)); }
 Stats stats(int i) { return g_stats[i]; }

@@ -34,6 +34,7 @@
 
 #include "keyboard.h"
 #include "runner.h"
+#include "../core/usb_esp.h"
 #include "app.h"
 #include "parts.h"
 #include "sdcard.h"
@@ -313,6 +314,57 @@ void run(const std::string &line) {
   }
   if (c == "memlog") {
     g_memlog = a.size() < 2 || a[1] != "off";
+    return done(0);
+  }
+  if (c == "pbread" && a.size() > 2) {
+    // pbread <hex addr> <len>: picoboot READ (0x84), hex dump.
+    uint32_t ar[2] = {(uint32_t)strtoul(a[1].c_str(), nullptr, 16), (uint32_t)strtoul(a[2].c_str(), nullptr, 0)};
+    if (!ar[1] || ar[1] > 65536) return done(2);
+    static uint8_t *buf = (uint8_t *)heap_caps_malloc(65536 + 64, MALLOC_CAP_SPIRAM);
+    const uint32_t t0 = millis();
+    const int r = usbdev::picoboot(0x84, ar, 8, buf, ar[1]);
+    Serial.printf("pbread %08x %u: rc %d, %u ms, crc32 %08x\n", (unsigned)ar[0], (unsigned)ar[1], r, (unsigned)(millis() - t0),
+                  (unsigned)esp_rom_crc32_le(0, buf, ar[1]));
+    for (uint32_t i = 0; r == 0 && i < ar[1] && i < 64; i += 16) {
+      Serial.printf("%04x ", (unsigned)i);
+      for (int k = 0; k < 16; k++) Serial.printf(" %02x", buf[i + k]);
+      Serial.println();
+    }
+    return done(r ? 1 : 0);
+  }
+  if (c == "pbreboot" && a.size() > 1) {
+    // pbreboot <type>: REBOOT2 (0x0a); 0 normal, 2 BOOTSEL. 500 ms delay.
+    const uint32_t ar[4] = {(uint32_t)strtoul(a[1].c_str(), nullptr, 0), 500, 0, 0};
+    const int r = usbdev::picoboot(0x0a, ar, 16, nullptr, 0);
+    Serial.printf("pbreboot %u: rc %d\n", (unsigned)ar[0], r);
+    return done(r ? 1 : 0);
+  }
+  if (c == "pbinfo") {
+    // GET_INFO (0x8b) INFO_SYS with flags 0x1|0x2|0x4|0x8 (chip, critical, cpu, flash).
+    const uint32_t ar[4] = {0x01, 0x0f, 0, 0};
+    static uint8_t buf[256];
+    const int r = usbdev::picoboot(0x8b, ar, 16, buf, 256);
+    Serial.printf("pbinfo: rc %d\n", r);
+    for (int i = 0; r == 0 && i < 64; i += 16) {
+      for (int k = 0; k < 16; k++) Serial.printf(" %02x", buf[i + k]);
+      Serial.println();
+    }
+    return done(r ? 1 : 0);
+  }
+  if (c == "usbcycle") {
+    // Spike: power-cycle the USB-A port with the host stack's own logging on.
+    for (const char *t : {"USBH", "HUB", "ENUM", "USB_HOST", "HCD DWC", "EXT_HUB", "EXT_PORT", "USB PHY"})
+      esp_log_level_set(t, ESP_LOG_VERBOSE);
+    usbdev::powerPort(false);
+    delay(500);
+    usbdev::powerPort(true);
+    delay(4000);
+    esp_log_level_set("*", ESP_LOG_NONE);
+    Serial.print(usbdev::trace().c_str());
+    return done(0);
+  }
+  if (c == "usb") {
+    Serial.print(usbdev::trace().c_str());
     return done(0);
   }
   if (c == "mem") {

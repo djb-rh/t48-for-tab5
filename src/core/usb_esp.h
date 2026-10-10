@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace usbdev {
 
@@ -13,6 +14,12 @@ void begin(LogFn log);
 void powerPort(bool on);
 // A programmer is enumerated and its interface claimed.
 bool attached();
+// Every USB log line since boot (console 'usb').
+std::string trace();
+// Spike: a One ROM on the port, and one picoboot command to it (data is
+// read for commands with bit 7 set, written otherwise). 0 on success.
+bool oneRomAttached();
+int picoboot(uint8_t cmd_id, const void *args, uint8_t args_len, uint8_t *data, uint32_t len);
 
 // Transfer timing since the last reset, for finding where a job's time goes.
 struct Stats {
