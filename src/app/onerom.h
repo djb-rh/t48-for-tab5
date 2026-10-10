@@ -95,10 +95,16 @@ struct Program {
 
 // ---- jobs (runner task) ----
 int jobProbe(bool quiet);                          // refreshes info()
-int jobProgram(const Program &p);                  // build, flash, check
+// Puts the image in ROM slot `slot` (0 first; the next free one adds a slot)
+// and keeps the others, which the Tab5 must be able to vouch for: it keeps a
+// copy of what it put in each slot and checks it against the device's flash
+// first. slot -1 replaces everything with this one image.
+int jobProgram(const Program &p, int slot = -1);
+int jobRemoveSlot(int slot);                        // the slots after it move down
 int jobRead(const std::string &path, uint32_t size);
 int jobVerify(const std::string &path);
-int jobUpdateFirmware();                           // newest firmware, same ROM
+int jobUpdateFirmware();                           // newest firmware, same slots
+int maxSlots(const std::string &board);            // what the image select jumpers can pick
 int jobIdentify();                                 // flash its LED for a while
 int jobCheckUpdates();                             // refresh the manifests
 

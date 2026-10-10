@@ -160,7 +160,7 @@ the chip panel shows the One ROM: its name, board, firmware and what it serves.
 
 | Key | | Key | |
 |---|---|---|---|
-| O | name and notes | W | program |
+| O | name and notes | W | program (pick the slot) |
 | P | chip type (One ROM's list) | R | read what it serves |
 | F | choose image | V | verify what it serves |
 | H | hex editor | I | info (slots, newest firmware) |
@@ -173,9 +173,17 @@ the chip panel shows the One ROM: its name, board, firmware and what it serves.
   plugin (so it stays reachable over USB while it runs), flashes it through
   the RP2350's bootloader, verifies the flash, restarts it and checks that
   it serves the file. About 10 s.
-- **Firmware** updates the firmware and keeps what it serves: the ROM is read
-  off the device first and built back in. (Single-slot One ROMs; a board
-  with several jumper-selected slots is reprogrammed with Program.)
+- **Slots**: Program asks which slot: replace one, add one after the others,
+  or replace everything with this image alone (Del on a slot removes it).
+  The jumpers pick the slot a One ROM serves (slot 0 with none fitted; a
+  Fire 28 has four, so sixteen slots). One ROM cannot hand its other slots
+  back over USB, so the Tab5 keeps its own record: a copy of every image it
+  put in each slot (`burner/onerom/devices/<serial>/`). Before changing one
+  slot it rebuilds the rest from that record and compares them byte for byte
+  with the One ROM's flash; if they differ (programmed elsewhere since) it
+  refuses rather than lose them. A One ROM with a single slot it is serving
+  can always be taken over: that slot is read off it live.
+- **Firmware** updates the firmware and keeps every slot, the same way.
 - **Read** and **Verify** work on the ROM it is serving, live, while it runs.
 - **Identify** flashes its status LED for 10 s, to find which one is on the
   end of a cable.

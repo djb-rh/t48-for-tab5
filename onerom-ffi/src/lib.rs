@@ -175,6 +175,22 @@ pub unsafe extern "C" fn ort_chip_info(name: *const c_char, out: *mut c_char, ca
     put(&s, out, cap)
 }
 
+/// The flash layout and the board's image select jumpers:
+/// "firmware_size=..\nmetadata_len=..\nsel_pins=..\n" (sel_pins only for a
+/// known board; 2^sel_pins slots can be selected).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ort_layout(board: *const c_char, out: *mut c_char, cap: usize) -> usize {
+    let mut s = format!(
+        "firmware_size={}\nmetadata_len={}\n",
+        onerom_gen::FIRMWARE_SIZE,
+        onerom_gen::MAX_METADATA_LEN
+    );
+    if let Some(b) = (unsafe { cstr(board) }).and_then(Board::try_from_str) {
+        let _ = writeln!(s, "sel_pins={}", b.sel_pins().len());
+    }
+    put(&s, out, cap)
+}
+
 // ---- release manifests (images.onerom.org) -----------------------------------
 
 fn version_of(s: &str) -> Option<FirmwareVersion> {

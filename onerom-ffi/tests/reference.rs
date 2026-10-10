@@ -111,3 +111,12 @@ fn parse_reference_image_as_flash() {
     assert!(t.contains("recognised=1") && t.contains("board=fire-28-c") && t.contains("version=0.8.0"), "{t}");
     assert!(t.contains("\t2764\t8192\t") && t.contains("\t27C256\t32768\t"), "{t}");
 }
+
+#[test]
+fn layout_and_select_pins() {
+    let mut out = [0u8; 256];
+    unsafe { ort_layout(c"fire-28-c".as_ptr(), out.as_mut_ptr() as *mut c_char, 256) };
+    let t = s(&out);
+    eprintln!("{t}");
+    assert!(t.contains("firmware_size=49152") && t.contains("metadata_len=16384") && t.contains("sel_pins="), "{t}");
+}

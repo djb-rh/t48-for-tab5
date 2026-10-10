@@ -16,6 +16,7 @@ typedef int (*OrtReadFn)(void *ctx, uint32_t addr, uint8_t *buf, uint32_t len);
 size_t ort_versions(char *out, size_t cap);
 size_t ort_chip_types(const char *board, char *out, size_t cap);
 size_t ort_chip_info(const char *name, char *out, size_t cap);
+size_t ort_layout(const char *board, char *out, size_t cap);
 size_t ort_pick_firmware(const char *manifest, size_t len, const char *board, char *out, size_t cap);
 size_t ort_pick_plugin(const char *manifest, size_t len, const char *base_url, uint16_t maj, uint16_t min,
                        uint16_t patch, char *out, size_t cap);

@@ -41,6 +41,7 @@ std::vector<std::string> baseArgs() {
 }
 
 void goKnown();
+void goSlots();
 void goTypes(const std::string &board);
 void editNotes(const std::string &serial);
 
@@ -323,8 +324,11 @@ class MainScreen : public Screen {
         line += " (" + latest + " out)";
         color = kWarn;
       }
+      int roms = 0;
+      for (const auto &sl : in.slots) roms += !sl.plugin;
       for (const auto &sl : in.slots)
         if (!sl.plugin && sl.active) line += "  |  " + sl.type;
+      if (roms > 1) line += "  |  " + std::to_string(roms) + " slots";
     }
     text(36, 160, fit(line, Font::Body, 568), Font::Body, color, kPanel);
     Button a = mk(kOrNotes, 36, 200, 280, 56, "Name & notes", "O");
@@ -715,31 +719,6 @@ class MainScreen : public Screen {
            });
   }
 
-  void orProgram() {
-    const auto &o = settings::get().onerom;
-    const auto in = onerom::info();
-    const std::string latest = onerom::latestFirmware();
-    std::string body = "Program " + onerom::displayName(onerom::serial()) + "\nwith " + baseName(g_image.path) +
-                       " (" + bytesText(g_image.size) + ") as a " + o.type + ".";
-    body += "\nFirmware: " + (in.version.empty() ? std::string("?") : in.version) + " -> " +
-            (latest.empty() ? std::string("the newest") : latest) + ", with the USB plugin.";
-    const auto ct = onerom::chipType(o.type);
-    if (ct.ok && g_image.size < ct.size && !o.fit)
-      body += "\nThe image is smaller than the chip: set Fit (1) first.";
-    body += "\nEverything on the One ROM is replaced.";
-    confirm("Program One ROM", body, "Program", [this](bool y) {
-      goMain();
-      if (!y) return;
-      onerom::Program p;
-      const auto &r = settings::get().onerom;
-      p.image = g_image.path;
-      p.type = r.type;
-      for (int i = 0; i < 3; i++) p.cs[i] = r.cs[i];
-      p.fit = r.fit;
-      runner::startFn([p] { return onerom::jobProgram(p); }, "Program");
-    });
-  }
-
   void orFirmware() {
     const auto in = onerom::info();
     const std::string latest = onerom::latestFirmware();
@@ -754,7 +733,7 @@ class MainScreen : public Screen {
                        (in.version.empty() ? std::string("?") : in.version) + " -> " +
                        (latest.empty() ? std::string("the newest") : latest) + ".";
     if (roms == 1) body += "\nIt keeps serving its " + keep + ".";
-    else body += "\nIt has " + std::to_string(roms) + " ROM slots: only a single slot can be kept.";
+    else body += "\nIt keeps its " + std::to_string(roms) + " ROM slots (checked against its flash first).";
     const bool same = !latest.empty() && latest == in.version;
     confirm(same ? "Reinstall firmware" : "Update firmware", body, same ? "Reinstall" : "Update", [](bool y) {
       goMain();
@@ -851,7 +830,7 @@ class MainScreen : public Screen {
         break;
       }
       case kOrRead: orRead(); break;
-      case kOrProgram: orProgram(); break;
+      case kOrProgram: goSlots(); break;
       case kOrFirmware: orFirmware(); break;
       case kOrFit: {
         auto &r = settings::get().onerom;
@@ -1508,6 +1487,149 @@ class TypesScreen : public Screen {
 TypesScreen g_types;
 
 // ============================================================================
+// One ROM slots: where Program puts the image
+// ============================================================================
+
+class SlotsScreen : public Screen {
+ public:
+  void enter() {
+    rows_.clear();
+    const auto in = onerom::info();
+    int i = 0;
+    for (const auto &sl : in.slots) {
+      if (sl.plugin) continue;
+      rows_.push_back({i, sl.type, sl.file, sl.active, false});
+      i++;
+    }
+    const int max = onerom::maxSlots(orBoard());
+    if (i < max) rows_.push_back({i, "", "", false, true});
+    rows_.push_back({-1, "", "", false, false});
+    sel_ = 0;
+  }
+
+  void draw() override {
+    d().fillRect(0, 0, W, 56, kPanel);
+    d().drawFastHLine(0, 56, W, kBorder);
+    text(20, 14, "Program into which slot?", Font::Body, kText, kPanel);
+    text(W - 20, 18, "arrows  |  Enter programs  |  Del removes a slot  |  Esc goes back", Font::Small, kDim, kPanel, 2);
+    const auto &o = settings::get().onerom;
+    panel(16, 72, 1248, 60, kPanel2);
+    text(36, 88, fit(baseName(app::image().path) + "  (" + bytesText(app::image().size) + ")  as a " + o.type,
+                     Font::Body, 1200), Font::Body, kText, kPanel2);
+    drawList();
+    text(36, 670, "The jumpers pick the slot it serves: slot 0 with none fitted. Other slots are kept: the Tab5 "
+                  "checks them against its record first.", Font::Small, kDim, kBg);
+  }
+
+  void key(const Key &k) override {
+    switch (k.special) {
+      case Special::Escape: goMain(); return;
+      case Special::Enter: choose(sel_); return;
+      case Special::Up: move(-1); return;
+      case Special::Down: move(1); return;
+      case Special::Delete:
+      case Special::Backspace: removeAt(sel_); return;
+      default: return;
+    }
+  }
+
+  void tap(int x, int y) override {
+    if (y < 56) return goMain();
+    if (y >= kListY && y < kListY + (int)rows_.size() * kRowH) choose((y - kListY) / kRowH);
+  }
+
+ private:
+  struct Row {
+    int slot;              // -1: replace everything
+    std::string type, file;
+    bool active, add;
+  };
+  static constexpr int kListY = 148, kRowH = 54;
+  std::vector<Row> rows_;
+  int sel_ = 0;
+
+  void move(int by) {
+    sel_ = std::max(0, std::min((int)rows_.size() - 1, sel_ + by));
+    d().startWrite();
+    drawList();
+    d().endWrite();
+  }
+
+  void drawList() {
+    d().fillRect(0, kListY, W, 9 * kRowH, kBg);
+    const int shown = std::min((int)rows_.size(), 9);
+    for (int r = 0; r < shown; r++) {
+      const Row &w = rows_[r];
+      const int y = kListY + r * kRowH;
+      const bool s = r == sel_;
+      const uint32_t bg = s ? kAccentDim : (r % 2 ? kBg : kPanel);
+      d().fillRect(16, y, 1248, kRowH - 4, bg);
+      std::string a, b;
+      if (w.slot < 0) {
+        a = "Replace everything";
+        b = "this image alone, in slot 0";
+      } else if (w.add) {
+        a = "Slot " + std::to_string(w.slot) + ": add";
+        b = "a new slot after the others";
+      } else {
+        a = "Slot " + std::to_string(w.slot) + ": " + w.type;
+        b = w.file + (w.active ? "  (serving)" : "");
+      }
+      text(36, y + 12, a, Font::Body, w.slot < 0 ? kWarn : kText, bg);
+      text(460, y + 15, fit(b, Font::Small, 780), Font::Small, s ? kText : kDim, bg);
+    }
+  }
+
+  void choose(int r) {
+    if (r < 0 || r >= (int)rows_.size()) return;
+    const Row w = rows_[r];
+    const auto &o = settings::get().onerom;
+    std::string body = baseName(app::image().path) + " (" + bytesText(app::image().size) + ") as a " + o.type;
+    const auto ct = onerom::chipType(o.type);
+    if (ct.ok && app::image().size < ct.size && !o.fit) body += "\nThe image is smaller than the chip: set Fit (1) first.";
+    std::string title;
+    if (w.slot < 0) {
+      title = "Replace everything";
+      body += "\nas its only slot. Every other slot is erased.";
+    } else if (w.add) {
+      title = "Add slot " + std::to_string(w.slot);
+      body += "\ninto a new slot " + std::to_string(w.slot) + ". The other slots are kept.";
+    } else {
+      title = "Replace slot " + std::to_string(w.slot);
+      body += "\nin place of its " + w.type + " (" + w.file + "). The other slots are kept.";
+    }
+    body += "\nWith the newest firmware and the USB plugin.";
+    const int slot = w.slot;
+    confirm(title, body, "Program", [slot](bool y) {
+      goMain();
+      if (!y) return;
+      onerom::Program p;
+      const auto &r = settings::get().onerom;
+      p.image = app::image().path;
+      p.type = r.type;
+      for (int i = 0; i < 3; i++) p.cs[i] = r.cs[i];
+      p.fit = r.fit;
+      runner::startFn([p, slot] { return onerom::jobProgram(p, slot); }, "Program");
+    });
+  }
+
+  void removeAt(int r) {
+    if (r < 0 || r >= (int)rows_.size() || rows_[r].slot < 0 || rows_[r].add) return;
+    const Row w = rows_[r];
+    const int slot = w.slot;
+    confirm("Remove slot " + std::to_string(slot),
+            "Remove its " + w.type + " (" + w.file + ")?\nThe slots after it move down one, so their jumper\n"
+            "settings change.",
+            "Remove", [slot](bool y) {
+              goMain();
+              if (y) runner::startFn([slot] { return onerom::jobRemoveSlot(slot); }, "Program");
+            });
+  }
+};
+
+SlotsScreen g_slots;
+
+// ============================================================================
 // Known One ROMs: every serial there are notes for
 // ============================================================================
 
@@ -1697,6 +1819,11 @@ namespace {
 void goKnown() {
   g_known.enter();
   show(&g_known);
+}
+
+void goSlots() {
+  g_slots.enter();
+  show(&g_slots);
 }
 
 void goTypes(const std::string &board) {

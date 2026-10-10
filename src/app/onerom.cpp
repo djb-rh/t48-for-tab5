@@ -418,28 +418,60 @@ std::string recordedName(const std::string &path) {
   return path.compare(0, pre.size(), pre) == 0 ? path.substr(pre.size()) : app::baseName(path);
 }
 
-// Builds the flashable image for one slot. On success *rom holds the ROM
-// data as the slot serves it (for checking it afterwards).
-bool build(const Program &p, const std::string &board, const std::string &size, const Pick &fw,
-           const std::string &fw_path, const Pick &plugin, Buf *image, std::string *why) {
-  const ChipType ct = chipType(p.type);
-  if (!ct.ok) {
-    *why = "unknown chip type " + p.type;
-    return false;
-  }
+// One ROM slot as this Tab5 put it there: a copy of the image (in the
+// device's folder on the card), the name the device records, and how it is
+// served.
+struct PlanSlot {
+  std::string file;     // full path of the copy
+  std::string name;     // recorded on the device
+  std::string type;
+  int cs[3] = {0, 0, 0};
+  int fit = 0;
+};
+
+struct Layout {
+  uint32_t firmware = 0, metadata = 0;
+  int slots = 1;        // the image select jumpers' combinations
+};
+
+Layout layout(const std::string &board) {
+  char out[256];
+  ort_layout(board.c_str(), out, sizeof(out));
+  Layout l;
+  l.firmware = strtoul(value(out, "firmware_size").c_str(), nullptr, 10);
+  l.metadata = strtoul(value(out, "metadata_len").c_str(), nullptr, 10);
+  const std::string sp = value(out, "sel_pins");
+  l.slots = sp.empty() ? 1 : 1 << atoi(sp.c_str());
+  return l;
+}
+
+// Builds the metadata and ROM data for these slots (after the USB plugin at
+// plugin_url) for firmware `version`. With fw_path, *image is the whole
+// flashable image; without, *image is the ROM data alone (to compare with a
+// device's flash).
+bool build(const std::vector<PlanSlot> &slots, const std::string &board, const std::string &size,
+           const std::string &version, const std::string &fw_path, const std::string &plugin_url, Buf *image,
+           std::string *why) {
   static const char *kLevel[3] = {"active_low", "active_high", "ignore"};
   static const char *kFit[3] = {"none", "duplicate", "pad"};
-  std::string chip = "{\"file\":" + jsonStr(p.name.empty() ? recordedName(p.image) : p.name) +
-                     ",\"type\":" + jsonStr(p.type);
-  for (size_t i = 0; i < ct.config_lines.size() && i < 3; i++)
-    chip += ",\"" + ct.config_lines[i] + "\":\"" + kLevel[p.cs[i] % 3] + "\"";
-  if (p.fit > 0) chip += std::string(",\"size_handling\":\"") + kFit[p.fit % 3] + "\"";
-  chip += "}";
-  const std::string json = "{\"version\":1,\"description\":\"Programmed by T48 for Tab5\",\"chip_sets\":["
-                           "{\"type\":\"single\",\"chips\":[{\"file\":" + jsonStr(plugin.url) +
-                           ",\"type\":\"system_plugin\"}]},{\"type\":\"single\",\"chips\":[" + chip + "]}]}";
+  std::string json = "{\"version\":1,\"description\":\"Programmed by T48 for Tab5\",\"chip_sets\":["
+                     "{\"type\":\"single\",\"chips\":[{\"file\":" + jsonStr(plugin_url) +
+                     ",\"type\":\"system_plugin\"}]}";
+  for (const auto &sl : slots) {
+    const ChipType ct = chipType(sl.type);
+    if (!ct.ok) {
+      *why = "unknown chip type " + sl.type;
+      return false;
+    }
+    std::string chip = "{\"file\":" + jsonStr(sl.name) + ",\"type\":" + jsonStr(sl.type);
+    for (size_t i = 0; i < ct.config_lines.size() && i < 3; i++)
+      chip += ",\"" + ct.config_lines[i] + "\":\"" + kLevel[sl.cs[i] % 3] + "\"";
+    if (sl.fit > 0) chip += std::string(",\"size_handling\":\"") + kFit[sl.fit % 3] + "\"";
+    json += ",{\"type\":\"single\",\"chips\":[" + chip + "}]}";
+  }
+  json += "]}";
   unsigned a = 0, b = 0, c = 0;
-  sscanf(fw.version.c_str(), "%u.%u.%u", &a, &b, &c);
+  sscanf(version.c_str(), "%u.%u.%u", &a, &b, &c);
   char err[512] = "";
   OrtBuilder *bld = ort_builder_new(json.data(), json.size(), a, b, c, err, sizeof(err));
   if (!bld) {
@@ -447,18 +479,22 @@ bool build(const Program &p, const std::string &board, const std::string &size, 
     return false;
   }
   bool ok = true;
-  char files[2048] = "";
+  char files[4096] = "";
   ort_builder_files(bld, files, sizeof(files));
   for (const auto &l : split(files, '\n')) {
     if (l.empty()) continue;
     const size_t tab = l.find('\t');
     const size_t id = strtoul(l.c_str(), nullptr, 10);
     const std::string src = l.substr(tab + 1);
-    // A URL is a cached download; anything else is the image (by its name).
-    const std::string path = src.compare(0, 8, "https://") == 0 ? cachePath(src) : p.image;
+    // A URL is a cached download; anything else is a slot's image, by the
+    // name it is recorded under (unique per device, see uniqueName).
+    std::string path;
+    if (src.compare(0, 8, "https://") == 0) path = cachePath(src);
+    for (const auto &sl : slots)
+      if (path.empty() && sl.name == src) path = sl.file;
     Buf data;
-    if (!readFile(path, &data)) {
-      *why = "cannot read " + path;
+    if (path.empty() || !readFile(path, &data)) {
+      *why = "cannot read the image for " + src;
       ok = false;
       break;
     }
@@ -475,25 +511,151 @@ bool build(const Program &p, const std::string &board, const std::string &size, 
     ok = false;
   }
   ort_builder_free(bld);
-  Buf base;
-  if (ok && !readFile(fw_path, &base)) {
-    *why = "cannot read " + fw_path;
-    ok = false;
-  }
-  uint8_t *img = nullptr;
-  size_t img_n = 0;
-  if (ok && ort_assemble(base.p, base.n, meta, meta_n, rom, rom_n, &img, &img_n)) {
-    *why = "the firmware does not fit its region";
-    ok = false;
+  if (ok && fw_path.empty()) {
+    ok = image->resize(rom_n);
+    if (ok) memcpy(image->p, rom, rom_n);
+  } else if (ok) {
+    Buf base;
+    if (!readFile(fw_path, &base)) {
+      *why = "cannot read " + fw_path;
+      ok = false;
+    }
+    uint8_t *img = nullptr;
+    size_t img_n = 0;
+    if (ok && ort_assemble(base.p, base.n, meta, meta_n, rom, rom_n, &img, &img_n)) {
+      *why = "the firmware does not fit its region";
+      ok = false;
+    }
+    if (ok) {
+      ok = image->resize(img_n);
+      if (ok) memcpy(image->p, img, img_n);
+    }
+    ort_free(img, img_n);
   }
   ort_free(meta, meta_n);
   ort_free(rom, rom_n);
-  if (ok) {
-    ok = image->resize(img_n);
-    if (ok) memcpy(image->p, img, img_n);
-  }
-  ort_free(img, img_n);
   return ok;
+}
+
+// ---- the slot plan (burner/onerom/devices/<serial>/plan.txt) ------------------
+
+std::string planDir(const std::string &serial) { return std::string(kDevices) + "/" + serial; }
+
+bool loadPlan(const std::string &serial, std::vector<PlanSlot> *plan) {
+  plan->clear();
+  std::string t;
+  if (!readText(planDir(serial) + "/plan.txt", &t)) return false;
+  for (const auto &l : split(t, '\n')) {
+    const auto f = split(l, '\t');
+    if (f.size() < 5) continue;
+    PlanSlot ps;
+    ps.name = f[0];
+    ps.type = f[1];
+    sscanf(f[2].c_str(), "%d %d %d", &ps.cs[0], &ps.cs[1], &ps.cs[2]);
+    ps.fit = atoi(f[3].c_str());
+    ps.file = planDir(serial) + "/" + f[4];
+    plan->push_back(ps);
+  }
+  return true;
+}
+
+bool savePlan(const std::string &serial, const std::vector<PlanSlot> &plan) {
+  mkdirs(planDir(serial));
+  std::string t;
+  for (const auto &ps : plan) {
+    char cs[16];
+    snprintf(cs, sizeof(cs), "%d %d %d", ps.cs[0], ps.cs[1], ps.cs[2]);
+    t += ps.name + "\t" + ps.type + "\t" + cs + "\t" + std::to_string(ps.fit) + "\t" + app::baseName(ps.file) + "\n";
+  }
+  return writeFile(planDir(serial) + "/plan.txt", (const uint8_t *)t.data(), t.size());
+}
+
+// Copies an image into the device's folder, named by its CRC and size (the
+// same image twice is one file). The plan's copies stay put when the
+// library's files are renamed or edited.
+bool keepCopy(const std::string &serial, const std::string &src, std::string *dst, std::string *why) {
+  Buf b;
+  if (!readFile(src, &b)) {
+    *why = "cannot read " + src;
+    return false;
+  }
+  char name[40];
+  snprintf(name, sizeof(name), "%08lx-%u.bin", (unsigned long)esp_rom_crc32_le(0, b.p, b.n), (unsigned)b.n);
+  mkdirs(planDir(serial));
+  *dst = planDir(serial) + "/" + name;
+  if (exists(*dst)) return true;
+  if (!writeFile(*dst, b.p, b.n)) {
+    *why = "cannot write " + *dst;
+    return false;
+  }
+  return true;
+}
+
+// The name a slot is recorded under must be unique on the device unless it
+// is the same image (the builder loads one file per name).
+std::string uniqueName(const std::vector<PlanSlot> &plan, int skip, std::string name, const std::string &file) {
+  const std::string base = name;
+  for (int n = 2;; n++) {
+    bool clash = false;
+    for (int i = 0; i < (int)plan.size(); i++)
+      if (i != skip && plan[i].name == name && plan[i].file != file) clash = true;
+    if (!clash) return name;
+    name = base + " (" + std::to_string(n) + ")";
+  }
+}
+
+// What the device serves from each ROM slot, in order (plugins left out).
+std::vector<Slot> romSlots(const Info &in) {
+  std::vector<Slot> out;
+  for (const auto &s : in.slots)
+    if (!s.plugin) out.push_back(s);
+  return out;
+}
+
+std::string pluginOn(const Info &in) {
+  for (const auto &s : in.slots)
+    if (s.plugin && s.file.find("/plugins/system/usb/") != std::string::npos) return s.file;
+  return "";
+}
+
+// Does the plan describe what is on the device? The names and types it
+// reports, and its ROM data byte for byte (rebuilt for its firmware and
+// plugin and compared with its flash).
+bool planMatches(const Info &in, const std::vector<PlanSlot> &plan, std::string *why) {
+  const auto roms = romSlots(in);
+  if (roms.size() != plan.size()) {
+    *why = "it has " + std::to_string(roms.size()) + " ROM slots, the record " + std::to_string(plan.size());
+    return false;
+  }
+  for (size_t i = 0; i < plan.size(); i++)
+    if (roms[i].type != plan[i].type || roms[i].file != plan[i].name) {
+      *why = "slot " + std::to_string(i) + " holds " + roms[i].file + " as " + roms[i].type;
+      return false;
+    }
+  // Other plugins (a factory RGB one) are not in the record.
+  int plugins = 0;
+  for (const auto &s : in.slots) plugins += s.plugin;
+  const std::string plugin = pluginOn(in);
+  if (plugins != 1 || plugin.empty()) {
+    *why = "it has plugins this Tab5 did not put there";
+    return false;
+  }
+  std::string path;
+  if (!ensure(plugin, "", &path, why)) return false;
+  runner::setPhase("Checking its slots");
+  Buf rom;
+  if (!build(plan, in.board, in.size, in.version, "", plugin, &rom, why)) return false;
+  const Layout l = layout(in.board);
+  Buf got(rom.n);
+  if (readMem(kFlash + l.firmware + l.metadata, got.p, rom.n)) {
+    *why = "could not read its flash";
+    return false;
+  }
+  if (memcmp(got.p, rom.p, rom.n)) {
+    *why = "its flash differs from the record";
+    return false;
+  }
+  return true;
 }
 
 // ---- flashing (in the bootloader) --------------------------------------------
@@ -541,10 +703,10 @@ bool flash(const Buf &img, std::string *why) {
 }
 
 // The ROM data as the slot serves it: the file, repeated or padded to size.
-bool servedRom(const Program &p, uint32_t size, Buf *out, std::string *why) {
+bool servedRom(const PlanSlot &p, uint32_t size, Buf *out, std::string *why) {
   Buf f;
-  if (!readFile(p.image, &f)) {
-    *why = "cannot read " + p.image;
+  if (!readFile(p.file, &f)) {
+    *why = "cannot read " + p.file;
     return false;
   }
   if (!out->resize(size)) return false;
@@ -719,21 +881,61 @@ int jobCheckUpdates() {
   return 0;
 }
 
-int jobProgram(const Program &p) {
-  std::string why;
-  if (!usbdev::oneRomAttached()) return fail("No One ROM on the USB-A port");
+namespace {
+
+// The record of what is in each slot, checked against the device. A device
+// whose record is missing or stale can still be taken over when it has one
+// ROM slot and serves it: that slot is read off it live.
+bool establishPlan(const Info &in, std::vector<PlanSlot> *plan, std::string *why) {
   const std::string ser = usbdev::oneRomSerial();
-  if (info().board.empty()) probe(true);
-  Info in = info();
+  std::string reason;
+  if (loadPlan(ser, plan) && planMatches(in, *plan, &reason)) return true;
+  if (reason.empty()) reason = "this Tab5 has no record of its slots";
+  const auto roms = romSlots(in);
+  if (roms.empty()) {
+    plan->clear();
+    return true;
+  }
+  if (roms.size() == 1 && roms[0].active && !usbdev::oneRomBootloader()) {
+    const Slot &s = roms[0];
+    const ChipType ct = chipType(s.type);
+    PlanSlot ps;
+    ps.type = s.type;
+    if (!ct.config_lines.empty()) {
+      // Select-line polarities cannot be read back: the ones last used here.
+      const auto &o = settings::get().onerom;
+      if (o.type != s.type) {
+        *why = "its " + s.type + " slot needs its select lines set (choose it as the chip type), or replace it";
+        return false;
+      }
+      for (int i = 0; i < 3; i++) ps.cs[i] = o.cs[i];
+    }
+    runner::setPhase("Saving what it serves");
+    Buf b(s.size);
+    const std::string tmp = std::string(kCache) + "/capture.bin";
+    mkdirs(kCache);
+    if (readMem(kLive, b.p, s.size) || !writeFile(tmp, b.p, s.size) || !keepCopy(ser, tmp, &ps.file, why)) {
+      if (why->empty()) *why = "could not read what it serves";
+      return false;
+    }
+    remove(tmp.c_str());
+    ps.name = s.file.empty() ? "kept.bin" : s.file;
+    plan->assign(1, ps);
+    runner::note("Read its %s (%s) off it to keep it", s.type.c_str(), ps.name.c_str());
+    return true;
+  }
+  *why = "its slots cannot be kept (" + reason + "): replace them all";
+  return false;
+}
+
+// Flashes the plan with the newest firmware and checks the result.
+// `target` is the slot to check against what it serves (if the jumpers
+// select it), -1 for none.
+int flashPlan(const std::vector<PlanSlot> &plan, int target, Info in) {
+  std::string why;
+  const std::string ser = usbdev::oneRomSerial();
   Notes notes;
   loadNotes(ser, &notes);
-  if (in.board.empty() && !notes.board.empty()) {
-    runner::note("No firmware recognised on it; it was a %s when last seen", boardLabel(notes.board).c_str());
-    in.board = notes.board;
-  }
-  if (in.board.empty())
-    return fail("Cannot tell which One ROM board this is (no firmware recognised on it, and never seen before)");
-
   if (!manifests(&why)) return fail(why);
   Pick fw, plugin;
   if (!pickFirmware(in.board, &fw)) return fail("No firmware release lists " + in.board);
@@ -743,15 +945,14 @@ int jobProgram(const Program &p) {
     g_latest = fw.version;
   }
   std::string fw_path, plugin_path;
-  if (!ensure(fw.url, "", &fw_path, &why) || !ensure(plugin.url, plugin.sha256, &plugin_path, &why))
-    return fail(why);
+  if (!ensure(fw.url, "", &fw_path, &why) || !ensure(plugin.url, plugin.sha256, &plugin_path, &why)) return fail(why);
 
   runner::setPhase("Building the image");
   Buf img;
-  if (!build(p, in.board, in.size, fw, fw_path, plugin, &img, &why)) return fail("Build: " + why);
-  runner::note("Image %s, CRC32 %08lX: firmware %s, USB plugin %s, %s as %s (%s)", app::bytesText(img.n).c_str(),
+  if (!build(plan, in.board, in.size, fw.version, fw_path, plugin.url, &img, &why)) return fail("Build: " + why);
+  runner::note("Image %s, CRC32 %08lX: firmware %s, USB plugin %s, %d ROM slot%s (%s)", app::bytesText(img.n).c_str(),
                (unsigned long)esp_rom_crc32_le(0, img.p, img.n), fw.version.c_str(), plugin.version.c_str(),
-               app::baseName(p.image).c_str(), p.type.c_str(), boardLabel(in.board).c_str());
+               (int)plan.size(), plan.size() == 1 ? "" : "s", boardLabel(in.board).c_str());
 
   if (!usbdev::oneRomBootloader()) {
     runner::setPhase("Stopping the One ROM");
@@ -761,29 +962,97 @@ int jobProgram(const Program &p) {
     reboot(false);
     return fail(why);
   }
+  savePlan(ser, plan);
   runner::setPhase("Starting the One ROM");
   if (!reboot(false)) return fail("Flashed and verified, but it did not come back running");
   probe(true);
   in = info();
   if (in.version != fw.version) return fail("It runs firmware " + in.version + ", not " + fw.version);
 
-  // What it serves now must be the image.
-  const ChipType ct = chipType(p.type);
-  Buf want, got(ct.size);
-  if (!servedRom(p, ct.size, &want, &why)) return fail(why);
-  runner::setPhase("Checking what it serves");
-  if (readMem(kLive, got.p, ct.size)) return fail("Could not read back what it serves");
-  if (memcmp(got.p, want.p, ct.size)) return fail("It serves something other than the image");
-
+  // What it serves now: the target slot, if that is the one selected.
+  const auto roms = romSlots(in);
+  int active = -1;
+  for (size_t i = 0; i < roms.size(); i++)
+    if (roms[i].active) active = (int)i;
+  if (target >= 0 && target == active) {
+    const ChipType ct = chipType(plan[target].type);
+    Buf want, got(ct.size);
+    if (!servedRom(plan[target], ct.size, &want, &why)) return fail(why);
+    runner::setPhase("Checking what it serves");
+    if (readMem(kLive, got.p, ct.size)) return fail("Could not read back what it serves");
+    if (memcmp(got.p, want.p, ct.size)) return fail("It serves something other than the image");
+    runner::note("Slot %d serves %s as %s: OK", target, plan[target].name.c_str(), plan[target].type.c_str());
+  } else if (target >= 0) {
+    runner::note("Flash verified. Slot %d is not the one its jumpers select (%d), so what it serves is unchanged",
+                 target, active);
+  }
   notes.programmed = now();
   notes.seen = notes.programmed;
-  notes.image = p.name.empty() ? recordedName(p.image) : p.name;
-  notes.type = p.type;
+  if (target >= 0) {
+    notes.image = plan[target].name;
+    notes.type = plan[target].type;
+  }
   notes.firmware = fw.version;
   saveNotes(ser, notes);
-  runner::note("Serving %s as %s, firmware %s: OK", app::baseName(p.image).c_str(), p.type.c_str(),
-               fw.version.c_str());
   return 0;
+}
+
+bool ready(Info *in, std::string *why) {
+  if (!usbdev::oneRomAttached()) {
+    *why = "No One ROM on the USB-A port";
+    return false;
+  }
+  probe(true);
+  *in = info();
+  Notes notes;
+  loadNotes(usbdev::oneRomSerial(), &notes);
+  if (in->board.empty() && !notes.board.empty()) {
+    runner::note("No firmware recognised on it; it was a %s when last seen", boardLabel(notes.board).c_str());
+    in->board = notes.board;
+  }
+  if (in->board.empty()) {
+    *why = "Cannot tell which One ROM board this is (no firmware recognised on it, and never seen before)";
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+int jobProgram(const Program &p, int slot) {
+  std::string why;
+  Info in;
+  if (!ready(&in, &why)) return fail(why);
+  std::vector<PlanSlot> plan;
+  if (slot >= 0 && !establishPlan(in, &plan, &why)) return fail("Cannot change one slot: " + why);
+  if (slot < 0) slot = 0;   // replace everything: this image alone
+  const Layout l = layout(in.board);
+  if (slot > (int)plan.size()) slot = (int)plan.size();
+  if (slot >= l.slots) return fail("A " + boardLabel(in.board) + " selects " + std::to_string(l.slots) + " slots at most");
+  PlanSlot ps;
+  if (!keepCopy(usbdev::oneRomSerial(), p.image, &ps.file, &why)) return fail(why);
+  ps.type = p.type;
+  for (int i = 0; i < 3; i++) ps.cs[i] = p.cs[i];
+  ps.fit = p.fit;
+  if (slot < (int)plan.size()) plan[slot] = ps;
+  else plan.push_back(ps);
+  plan[slot].name = uniqueName(plan, slot, p.name.empty() ? recordedName(p.image) : p.name, ps.file);
+  return flashPlan(plan, slot, in);
+}
+
+int maxSlots(const std::string &board) { return layout(board).slots; }
+
+int jobRemoveSlot(int slot) {
+  std::string why;
+  Info in;
+  if (!ready(&in, &why)) return fail(why);
+  std::vector<PlanSlot> plan;
+  if (!establishPlan(in, &plan, &why)) return fail("Cannot remove a slot: " + why);
+  if (slot < 0 || slot >= (int)plan.size()) return fail("No slot " + std::to_string(slot));
+  if (plan.size() == 1) return fail("It is its only slot: program another image over it instead");
+  runner::note("Removing slot %d (%s); the slots after it move down one", slot, plan[slot].name.c_str());
+  plan.erase(plan.begin() + slot);
+  return flashPlan(plan, -1, in);
 }
 
 int jobRead(const std::string &path, uint32_t size) {
@@ -817,47 +1086,17 @@ int jobVerify(const std::string &path) {
 
 int jobUpdateFirmware() {
   std::string why;
-  if (!needsRunning(&why)) return fail(why);
-  probe(true);
-  const Info in = info();
-  std::vector<Slot> roms;
-  for (const auto &s : in.slots)
-    if (!s.plugin) roms.push_back(s);
-  if (roms.size() != 1)
-    return fail("This One ROM has " + std::to_string(roms.size()) +
-                " ROM slots; keeping more than one is not supported. Use Program instead.");
-  const Slot &s = roms[0];
-  const ChipType ct = chipType(s.type);
-  if (!ct.ok) return fail("Unknown chip type on the device: " + s.type);
-  Program p;
-  p.type = s.type;
-  if (!ct.config_lines.empty()) {
-    // Select-line polarities are not readable back; use the ones last used
-    // for this type here.
-    const auto &o = settings::get().onerom;
-    if (o.type != s.type)
-      return fail("A " + s.type + " needs its select lines set: choose it as the chip type and use Program");
-    for (int i = 0; i < 3; i++) p.cs[i] = o.cs[i];
-  }
-  // Keep what it serves: read it first.
-  const std::string keep = std::string(kCache) + "/keep-" + usbdev::oneRomSerial() + ".bin";
-  mkdirs(kCache);
-  Buf b(s.size);
-  runner::setPhase("Saving what it serves");
-  if (readMem(kLive, b.p, s.size) || !writeFile(keep, b.p, s.size))
-    return fail("Could not save what it serves");
-  runner::note("Saved its %s %s (%s) to keep it", s.type.c_str(), app::bytesText(s.size).c_str(),
-               s.file.empty() ? "unnamed" : s.file.c_str());
-  p.image = keep;
-  p.name = s.file.empty() ? "kept.bin" : s.file;   // the device keeps the original name
-  const int rc = jobProgram(p);
-  if (rc == 0) {
-    Notes n;
-    loadNotes(usbdev::oneRomSerial(), &n);
-    n.image = p.name;
-    saveNotes(usbdev::oneRomSerial(), n);
-  }
-  return rc;
+  Info in;
+  if (!ready(&in, &why)) return fail(why);
+  std::vector<PlanSlot> plan;
+  if (!establishPlan(in, &plan, &why)) return fail("Cannot keep what it serves: " + why + ". Use Program instead.");
+  if (plan.empty()) return fail("It has no ROM slots to keep: use Program");
+  runner::note("Keeping its %d ROM slot%s", (int)plan.size(), plan.size() == 1 ? "" : "s");
+  int active = -1;
+  const auto roms = romSlots(in);
+  for (size_t i = 0; i < roms.size(); i++)
+    if (roms[i].active) active = (int)i;
+  return flashPlan(plan, active, in);
 }
 
 int jobIdentify() {

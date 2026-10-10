@@ -276,6 +276,16 @@ void run(const std::string &line) {
       p.type = a[3];
       p.fit = a.size() > 4 ? atoi(a[4].c_str()) : 0;
       started = runner::startFn([p] { return onerom::jobProgram(p); }, "Program");
+    } else if (v == "slot" && a.size() > 4) {   // or slot <n> <path> <type> [fit]
+      onerom::Program p;
+      const int n = atoi(a[2].c_str());
+      p.image = a[3];
+      p.type = a[4];
+      p.fit = a.size() > 5 ? atoi(a[5].c_str()) : 0;
+      started = runner::startFn([p, n] { return onerom::jobProgram(p, n); }, "Program");
+    } else if (v == "remove" && a.size() > 2) {
+      const int n = atoi(a[2].c_str());
+      started = runner::startFn([n] { return onerom::jobRemoveSlot(n); }, "Program");
     } else if (v == "read" && a.size() > 3) {
       const std::string path = a[2];
       const uint32_t n = strtoul(a[3].c_str(), nullptr, 0);
