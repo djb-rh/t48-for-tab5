@@ -434,6 +434,10 @@ void run(const std::string &line) {
                   orig_ok ? "OK" : "FAILED", (unsigned)esp_rom_crc32_le(0, back, len));
     return done(pat_ok && orig_ok ? 0 : 1);
   }
+  if (c == "usbpower" && a.size() > 1) {   // test aid: unplug/replug the USB-A port
+    usbdev::powerPort(a[1] != "0");
+    return done(0);
+  }
   if (c == "usbcycle") {
     // Spike: power-cycle the USB-A port with the host stack's own logging on.
     for (const char *t : {"USBH", "HUB", "ENUM", "USB_HOST", "HCD DWC", "EXT_HUB", "EXT_PORT", "USB PHY"})
