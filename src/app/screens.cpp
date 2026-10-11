@@ -44,6 +44,7 @@ std::vector<std::string> baseArgs() {
 
 void goKnown();
 void goSlots();
+void goMatches(const std::vector<int> &rows, int start, const std::string &banner);
 void goTypes(const std::string &board);
 void editNotes(const std::string &serial);
 
@@ -660,19 +661,23 @@ class MainScreen : public Screen {
         break;
       }
     }
+    // One name per part: makers that renamed (SGS-THOMSON, ST) list it twice.
+    std::vector<std::string> names;
+    for (int r : rows)
+      if (std::find(names.begin(), names.end(), parts::row(r).name) == names.end()) names.push_back(parts::row(r).name);
     std::string list;
-    int shown = 0;
-    for (int r : rows) {
-      if (shown == 4) {
-        list += ", ...";
-        break;
-      }
-      list += (shown ? ", " : "") + std::string(parts::row(r).name);
-      shown++;
-    }
+    for (size_t i = 0; i < names.size() && i < 4; i++) list += (i ? ", " : "") + names[i];
+    if (names.size() > 4) list += ", ...";
     char head[96];
     snprintf(head, sizeof(head), "The chip reports ID 0x%04X; %s expects 0x%04X.", got, cur.c_str(), expected);
     runner::note("Chip ID 0x%04X matches %s", got, list.c_str());
+    if (rows.size() > 1) {
+      char banner[120];
+      snprintf(banner, sizeof(banner), "Chip ID 0x%04X (%s expects 0x%04X): %d parts match", got, cur.c_str(), expected,
+               (int)rows.size());
+      goMatches(rows, best, banner);
+      return;
+    }
     const auto &b = parts::row(best);
     confirm("Wrong chip selected?",
             std::string(head) + "\nMatching parts: " + list + "\n\nSwitch to " + b.name + " (" + b.maker + ")?",
@@ -908,7 +913,21 @@ MainScreen g_main;
 
 class PartsScreen : public Screen {
  public:
+  // Just these parts (the ones matching a chip's ID), starting on `start`.
+  void enterMatches(const std::vector<int> &rows, int start, const std::string &banner) {
+    preset_ = rows;
+    banner_ = banner;
+    query_.clear();
+    results_ = rows;
+    sel_ = 0;
+    top_ = 0;
+    for (size_t i = 0; i < results_.size(); i++)
+      if (results_[i] == start) sel_ = (int)i;
+  }
+
   void enter() {
+    preset_.clear();
+    banner_.clear();
     query_.clear();
     parts::search(query_, &results_);
     sel_ = 0;
@@ -926,7 +945,7 @@ class PartsScreen : public Screen {
   void draw() override {
     d().fillRect(0, 0, W, 56, kPanel);
     d().drawFastHLine(0, 56, W, kBorder);
-    text(20, 14, "Choose chip", Font::Body, kText, kPanel);
+    text(20, 14, preset_.empty() ? "Choose chip" : "Pick the chip that matches", Font::Body, kText, kPanel);
     text(W - 20, 18, "type to search  |  arrows  |  Enter picks  |  Esc goes back", Font::Small, kDim, kPanel, 2);
     drawQuery();
     drawList();
@@ -988,10 +1007,23 @@ class PartsScreen : public Screen {
   static constexpr int kListY = 148, kRowH = 50, kRows = 11;
   std::string query_;
   std::vector<int> results_;
+  std::vector<int> preset_;      // non-empty: picking among these only
+  std::string banner_;
   int sel_ = 0, top_ = 0, drag_ = 0;
 
   void research() {
-    parts::search(query_, &results_);
+    if (!preset_.empty()) {
+      results_.clear();
+      std::string q;
+      for (char c : query_) q += (char)toupper((unsigned char)c);
+      for (int r : preset_) {
+        std::string n = parts::row(r).name;
+        for (auto &c : n) c = toupper((unsigned char)c);
+        if (n.find(q) != std::string::npos) results_.push_back(r);
+      }
+    } else {
+      parts::search(query_, &results_);
+    }
     sel_ = 0;
     top_ = 0;
     d().startWrite();
@@ -1019,7 +1051,9 @@ class PartsScreen : public Screen {
 
   void drawQuery() {
     panel(16, 72, 1248, 60, kPanel2, kAccent);
-    if (query_.empty()) {
+    if (query_.empty() && !banner_.empty()) {
+      text(36, 88, fit(banner_, Font::Body, 1000), Font::Body, kText, kPanel2);
+    } else if (query_.empty()) {
       char b[80];
       snprintf(b, sizeof(b), "Type part of a name (%d parts)", parts::count());
       text(36, 88, b, Font::Body, kFaint, kPanel2);
@@ -1855,6 +1889,11 @@ namespace {
 void goKnown() {
   g_known.enter();
   show(&g_known);
+}
+
+void goMatches(const std::vector<int> &rows, int start, const std::string &banner) {
+  g_parts.enterMatches(rows, start, banner);
+  show(&g_parts);
 }
 
 void goSlots() {

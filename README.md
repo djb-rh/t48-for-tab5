@@ -29,7 +29,8 @@ ROM programmer working from the same images. See [One ROM](#one-rom).
   ![A failed job: STOP](docs/result-stop.png)
 - **Wrong chip in the socket?** When the chip ID doesn't match the part you
   chose, the ID is looked up in the whole library (parts programmed the same
-  way, same package first) and you're offered the match. An ID of 0000 or
+  way) and you're offered the match, or a list to pick from when several
+  parts share the ID (same package first; type to narrow it). An ID of 0000 or
   FFFF means no chip answered: check its orientation and the lever.
 - **Write options** as toggles: size mismatch OK, skip erase, skip verify,
   ignore chip ID mismatch.
