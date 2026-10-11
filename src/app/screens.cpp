@@ -2,6 +2,8 @@
 // The hex editor is in hexedit.cpp, Wi-Fi in wifi_screen.cpp.
 
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <dirent.h>
 #include <esp_rom_crc.h>
 #include <sys/stat.h>
@@ -95,6 +97,11 @@ class MainScreen : public Screen {
   }
 
   void tick() override {
+    if (lookup_.done) {
+      lookup_.done = false;
+      suggest();
+      if (current() != this) return;
+    }
     const auto st = runner::status();
     if (st.seq != seq_) {
       seq_ = st.seq;
@@ -104,6 +111,7 @@ class MainScreen : public Screen {
         drawPanels();
         d().endWrite();
         if (!st.busy) finished(st);
+        if (current() != this) return;   // a dialog opened: do not paint over it
       }
       d().startWrite();
       drawLog();
@@ -603,12 +611,40 @@ class MainScreen : public Screen {
           sscanf(l.c_str() + l.find("expected"), "expected 0x%x, got 0x%x", &expected, &got) == 2)
         found = true;
     }
-    if (!found || g_part < 0) return;
+    if (!found || g_part < 0 || lookup_.busy) return;
     if (got == 0 || got == 0xFFFF || got == 0xFFFFFFFF) {
       runner::note("No chip answered (ID 0x%04X): check it is in the socket the right way round and the lever is down", got);
       return;
     }
-    const auto rows = parts::byChipId(got, g_part);
+    // The library is scanned in a task of its own (the first time takes a
+    // few seconds); tick() shows the answer.
+    lookup_.got = got;
+    lookup_.expected = expected;
+    lookup_.like = g_part;
+    lookup_.busy = true;
+    runner::note("Looking up chip ID 0x%04X in the part library...", got);
+    xTaskCreatePinnedToCoreWithCaps(
+        [](void *arg) {
+          auto *l = (Lookup *)arg;
+          l->rows = parts::byChipId(l->got, l->like);
+          l->busy = false;
+          l->done = true;
+          vTaskDeleteWithCaps(nullptr);
+        },
+        "idlookup", 8192, &lookup_, 2, nullptr, 1, MALLOC_CAP_SPIRAM);
+  }
+
+  struct Lookup {
+    volatile bool busy = false, done = false;
+    unsigned got = 0, expected = 0;
+    int like = -1;
+    std::vector<int> rows;
+  } lookup_;
+
+  void suggest() {
+    const auto rows = lookup_.rows;
+    const unsigned got = lookup_.got, expected = lookup_.expected;
+    if (lookup_.like != g_part) return;   // the chip was changed meanwhile
     if (rows.empty()) {
       runner::note("No part in the library has chip ID 0x%04X", got);
       return;

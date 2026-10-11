@@ -195,45 +195,94 @@ int find(const char *name, const char *maker) {
 }
 
 namespace {
+
 uint32_t attrNum(const char *line, const char *name) {
   char key[32];
   snprintf(key, sizeof(key), " %s=\"", name);
   const char *p = strstr(line, key);
   return p ? (uint32_t)strtoul(p + strlen(key), nullptr, 0) : 0xFFFFFFFF;
 }
+
+// Every entry's chip ID and protocol, by its offset in entries.xml: built on
+// the first lookup (reading the file in 64 KB blocks; line by line through
+// stdio took long enough on the card to look like a hang) and kept.
+struct IdRow {
+  uint32_t chip_id, protocol, offset;
+};
+std::vector<IdRow> g_ids;
+bool g_ids_built = false;
+
+void buildIds() {
+  if (g_ids_built) return;
+  char path[96];
+  snprintf(path, sizeof(path), "%s/entries.xml", kDbDir);
+  FILE *f = fopen(path, "rb");
+  if (!f) return;
+  constexpr size_t kBlock = 65536;
+  char *buf = (char *)heap_caps_malloc(kBlock + 1, MALLOC_CAP_SPIRAM);
+  if (!buf) {
+    fclose(f);
+    return;
+  }
+  g_ids.clear();
+  g_ids.reserve(12000);
+  size_t have = 0;       // bytes in buf not yet consumed
+  uint32_t base = 0;     // file offset of buf[0]
+  bool eof = false;
+  while (!eof || have) {
+    if (!eof) {
+      const size_t n = fread(buf + have, 1, kBlock - have, f);
+      if (n == 0) eof = true;
+      have += n;
+    }
+    buf[have] = 0;
+    size_t start = 0;
+    for (;;) {
+      char *nl = (char *)memchr(buf + start, '\n', have - start);
+      if (!nl) {
+        // A line longer than the block, or the file's last line: take what
+        // there is when nothing more is coming.
+        if ((eof || start == 0) && start < have) nl = buf + have;
+        else break;
+      }
+      *nl = 0;
+      const char *line = buf + start;
+      if (line[0] == '<' && line[1] == 'i' && line[2] == 'c') {
+        const uint32_t cid = attrNum(line, "chip_id");
+        // Every entry, ID or not: the chosen part's protocol is looked up here too.
+        g_ids.push_back({cid, attrNum(line, "protocol_id"), base + (uint32_t)start});
+      }
+      start = (size_t)(nl - buf) + 1;
+      if (start >= have) break;
+    }
+    if (start > have) start = have;
+    memmove(buf, buf + start, have - start);
+    base += start;
+    have -= start;
+    if (eof && have == 0) break;
+  }
+  free(buf);
+  fclose(f);
+  g_ids_built = true;
+}
+
 }  // namespace
 
 std::vector<int> byChipId(uint32_t id, int like) {
   std::vector<int> out;
-  char path[96];
-  snprintf(path, sizeof(path), "%s/entries.xml", kDbDir);
-  FILE *f = fopen(path, "rb");
-  if (!f) return out;
-  // The protocol of the chosen part, from its own entry line.
+  buildIds();
+  // The protocol of the chosen part (the same algorithm family).
   uint32_t protocol = 0xFFFFFFFF;
-  constexpr size_t kLine = 65536;
-  char *line = (char *)heap_caps_malloc(kLine, MALLOC_CAP_SPIRAM);
-  if (!line) {
-    fclose(f);
-    return out;
-  }
-  if (like >= 0 && fseek(f, g_rows[like].offset, SEEK_SET) == 0 && fgets(line, kLine, f))
-    protocol = attrNum(line, "protocol_id");
-  fseek(f, 0, SEEK_SET);
+  for (const auto &r : g_ids)
+    if (like >= 0 && r.offset == g_rows[like].offset) protocol = r.protocol;
   std::vector<uint32_t> offsets;
-  long off = 0;
-  while (fgets(line, kLine, f)) {
-    const long next = ftell(f);
-    const uint32_t cid = attrNum(line, "chip_id");
-    if (cid != 0xFFFFFFFF && cid != 0 && (cid == id || (cid >> 5) == id) &&
-        (protocol == 0xFFFFFFFF || attrNum(line, "protocol_id") == protocol))
-      offsets.push_back((uint32_t)off);
-    off = next;
-  }
-  fclose(f);
-  free(line);
+  for (const auto &r : g_ids)
+    if (r.chip_id != 0 && r.chip_id != 0xFFFFFFFF && (r.chip_id == id || (r.chip_id >> 5) == id) &&
+        (protocol == 0xFFFFFFFF || r.protocol == protocol))
+      offsets.push_back(r.offset);
+  std::sort(offsets.begin(), offsets.end());
   for (size_t i = 0; i < g_rows.size(); i++)
-    if (std::find(offsets.begin(), offsets.end(), g_rows[i].offset) != offsets.end()) out.push_back((int)i);
+    if (std::binary_search(offsets.begin(), offsets.end(), g_rows[i].offset)) out.push_back((int)i);
   return out;
 }
 
