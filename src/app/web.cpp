@@ -18,6 +18,7 @@
 #include <cstring>
 
 #include "app.h"
+#include "host.h"
 #include "parts.h"
 #include "onerom.h"
 #include "runner.h"
@@ -617,6 +618,13 @@ void begin() {
   WiFi.setHostname("t48-for-tab5");
   auto &s = settings::get();
   if (s.wifi_ssid.empty()) {
+    // Inside a launcher with a network of its own: use that until one is
+    // set up here (it is not saved, so the launcher's stays the one in use).
+    const auto &h = host::get();
+    if (h.wifi_ssid && *h.wifi_ssid) {
+      connect(h.wifi_ssid, h.wifi_pass ? h.wifi_pass : "");
+      return;
+    }
     startPortal();   // nothing saved: set it up from a phone
     return;
   }
@@ -724,9 +732,14 @@ void setUploadPace(uint32_t ms) { g_upload_pace_ms = ms; }
 
 void reconnect() {
   auto &s = settings::get();
-  if (s.wifi_ssid.empty()) return;
-  WiFi.disconnect(false);   // not the radio: it cannot be restarted
-  connect(s.wifi_ssid, s.wifi_pass);
+  const auto &h = host::get();
+  if (!s.wifi_ssid.empty()) {
+    WiFi.disconnect(false);   // not the radio: it cannot be restarted
+    connect(s.wifi_ssid, s.wifi_pass);
+  } else if (h.wifi_ssid && *h.wifi_ssid && !g_portal) {
+    WiFi.disconnect(false);
+    connect(h.wifi_ssid, h.wifi_pass ? h.wifi_pass : "");
+  }
 }
 
 void forget() {

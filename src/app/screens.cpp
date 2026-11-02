@@ -13,6 +13,7 @@
 #include <cstring>
 
 #include "app.h"
+#include "host.h"
 #include "onerom.h"
 #include "parts.h"
 #include "runner.h"
@@ -64,6 +65,7 @@ enum Btn {
   // One ROM mode
   kOrNotes, kOrType, kOrProgram, kOrRead, kOrVerify, kOrInfo, kOrFirmware, kOrIdentify,
   kOrFit, kOrCs1, kOrCs2, kOrCs3, kKnown,
+  kHome,   // inside a launcher (host.h)
 };
 
 // One ROM mode: a One ROM on the USB-A port turns the main screen into its
@@ -214,7 +216,15 @@ class MainScreen : public Screen {
     const Status &s = g_status;
     d().fillRect(0, 0, W, 56, kPanel);
     d().drawFastHLine(0, 56, W, kBorder);
-    text(20, 14, "T48 for Tab5", Font::Body, kText, kPanel);
+    if (host::hosted()) {
+      // Inside the launcher: Home, then the app's own name.
+      Button h = mk(kHome, 8, 6, 96, 44, "Home", "");
+      h.enabled = !busy();
+      addButton(h);
+      text(124, 14, "T48 + One ROM", Font::Body, kText, kPanel);
+    } else {
+      text(20, 14, "T48 for Tab5", Font::Body, kText, kPanel);
+    }
     int x = 560;
     auto item = [&](const char *label, const std::string &value, uint32_t color) {
       text(x, 18, label, Font::Small, kDim, kPanel);
@@ -801,6 +811,10 @@ class MainScreen : public Screen {
       case kChooseImage: goFiles(); break;
       case kHex: goHex(); break;
       case kWifi: goWifi(); break;
+      case kHome:
+        if (busy()) runner::note("Home is there once the job finishes");
+        else if (host::hosted()) host::get().home();
+        break;
       case kInfo: run({"-q", "t48", "-d", partName()}, "Chip info"); break;   // -q: no "which programmer?" prompt
       case kBlank: run({"-b"}, "Blank check"); break;
       case kId: run({"-D"}, "Chip ID"); break;
