@@ -1,7 +1,7 @@
 # T48 for Tab5
 
 A stand-alone EPROM/flash programmer: an [M5Stack Tab5](https://docs.m5stack.com/en/core/Tab5)
-with its clip-on keyboard drives an [XGecu T48](http://www.xgecu.com/) plugged
+with or without its clip-on keyboard, drives an [XGecu T48](http://www.xgecu.com/) plugged
 into the Tab5's USB-A port. Pick a chip, pick an image, and blank check, read,
 write, verify or erase without a computer. ROM images live on the Tab5's SD
 card and move on and off it through a file manager in your browser.
