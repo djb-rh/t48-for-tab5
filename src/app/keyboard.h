@@ -29,6 +29,8 @@ struct Key {
 void begin();
 void tick(uint32_t now_ms);
 bool present();
+// Testing: acts as if the keyboard were unclipped (keys still arrive).
+void pretendAbsent(bool absent);
 // The next key typed, if any. Keys are queued, so a fast typist loses none.
 bool take(Key *out);
 // Queues a key as if it had been typed (serial test console).

@@ -59,8 +59,9 @@ ROM programmer working from the same images. See [One ROM](#one-rom).
 
 ## Hardware
 
-- M5Stack Tab5 (ESP32-P4) and the M5Stack Tab5 Keyboard. Chip search needs
-  the keyboard; everything else also works by touch.
+- M5Stack Tab5 (ESP32-P4). The M5Stack Tab5 Keyboard is optional: without it,
+  on-screen keys come up wherever you type (chip search, file names, One ROM
+  notes, hex bytes) and everything else works by touch.
 - XGecu T48 in the Tab5's USB-A port. The port is the P4's high-speed USB 2.0
   PHY and its 5 V switch (MT9700) comfortably powers the T48.
 - A microSD card formatted **FAT32** (the prebuilt ESP-IDF has exFAT off).

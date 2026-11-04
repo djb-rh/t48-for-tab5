@@ -67,11 +67,21 @@ class Screen {
   virtual void tap(int x, int y) {}
   // A finger dragged vertically by dy pixels since the last call (lists).
   virtual void drag(int dy) {}
+  // Takes typed text: the on-screen keys can show here when no clip-on
+  // keyboard is attached. What they type arrives through key().
+  virtual bool wantsKeys() { return false; }
 };
 
 void show(Screen *s);          // makes s current and draws it
 Screen *current();
 void redraw();                 // full redraw of the current screen
+
+// The on-screen keys, for a screen that wantsKeys() with no clip-on keyboard.
+// They cover the bottom of the screen and draw themselves after draw(). Their
+// Hide key closes them and redraws, so draw() must lay out by keysTop().
+void openKeys(bool open, bool capsLock = false);  // takes effect at the next draw
+bool keysUp();     // showing now
+int keysTop();     // where they start: H when they aren't showing
 
 // Called by main.cpp every loop: reads touch and the keyboard, routes them.
 void pump();

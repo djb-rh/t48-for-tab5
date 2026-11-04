@@ -316,6 +316,11 @@ void run(const std::string &line) {
     return done(0);
   }
   if (c == "key" && line.size() > 4) return done(cmdKey(line.substr(4)));
+  if (c == "nokb" && a.size() > 1) {
+    // Tests the on-screen keys with the clip-on keyboard still attached.
+    keyboard::pretendAbsent(a[1] == "1");
+    return done(0);
+  }
   if (c == "sdformat") {
     // Deliberately awkward: it erases the card.
     if (a.size() < 2 || a[1] != "ERASE") {

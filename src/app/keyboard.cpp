@@ -27,6 +27,7 @@ constexpr uint32_t kPollMs = 15;     // while present, how often to ask for keys
 
 bool g_bus = false;
 bool g_present = false;
+bool g_pretend_absent = false;
 uint32_t g_next_probe = 0;
 uint32_t g_next_poll = 0;
 
@@ -168,7 +169,8 @@ void begin() {
   g_next_poll = 0;
 }
 
-bool present() { return g_present; }
+bool present() { return g_present && !g_pretend_absent; }
+void pretendAbsent(bool absent) { g_pretend_absent = absent; }
 
 void dumpLog() {
   Serial.printf("keyboard: present=%d polls=%lu with_events=%lu typed=[%s]\n", (int)g_present,

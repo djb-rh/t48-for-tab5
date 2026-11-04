@@ -49,6 +49,9 @@ void goMatches(const std::vector<int> &rows, int start, const std::string &banne
 void goTypes(const std::string &board);
 void editNotes(const std::string &serial);
 
+// How a search box invites you, when typing means opening the on-screen keys.
+const char *searchVerb() { return keyboard::present() || keysUp() ? "Type" : "Tap here to type"; }
+
 bool fileExists(const std::string &p) {
   struct stat st;
   return stat(p.c_str(), &st) == 0;
@@ -935,6 +938,7 @@ class PartsScreen : public Screen {
     results_ = rows;
     sel_ = 0;
     top_ = 0;
+    openKeys(false);  // a short list: nothing to search for
     for (size_t i = 0; i < results_.size(); i++)
       if (results_[i] == start) sel_ = (int)i;
   }
@@ -943,6 +947,7 @@ class PartsScreen : public Screen {
     preset_.clear();
     banner_.clear();
     query_.clear();
+    openKeys(true, true);
     parts::search(query_, &results_);
     sel_ = 0;
     top_ = 0;
@@ -951,16 +956,21 @@ class PartsScreen : public Screen {
       for (size_t i = 0; i < results_.size(); i++)
         if (results_[i] == g_part) {
           sel_ = (int)i;
-          top_ = std::max(0, sel_ - kRows / 2);
+          top_ = std::max(0, sel_ - rows() / 2);
         }
     }
   }
+
+  bool wantsKeys() override { return true; }
 
   void draw() override {
     d().fillRect(0, 0, W, 56, kPanel);
     d().drawFastHLine(0, 56, W, kBorder);
     text(20, 14, preset_.empty() ? "Choose chip" : "Pick the chip that matches", Font::Body, kText, kPanel);
-    text(W - 20, 18, "type to search  |  arrows  |  Enter picks  |  Esc goes back", Font::Small, kDim, kPanel, 2);
+    text(W - 20, 18, keyboard::present() ? "type to search  |  arrows  |  Enter picks  |  Esc goes back"
+                                         : "drag the list  |  tap to pick  |  tap here to go back",
+         Font::Small, kDim, kPanel, 2);
+    if (sel_ < top_ || sel_ >= top_ + rows()) top_ = std::max(0, sel_ - rows() / 2);
     drawQuery();
     drawList();
   }
@@ -980,8 +990,8 @@ class PartsScreen : public Screen {
         return;
       case Special::Up: move(-1); return;
       case Special::Down: move(1); return;
-      case Special::PageUp: move(-kRows); return;
-      case Special::PageDown: move(kRows); return;
+      case Special::PageUp: move(-rows()); return;
+      case Special::PageDown: move(rows()); return;
       case Special::Home: move(-n); return;
       case Special::End: move(n); return;
       default: break;
@@ -997,7 +1007,14 @@ class PartsScreen : public Screen {
       goMain();
       return;
     }
-    if (y >= kListY && y < kListY + kRows * kRowH) {
+    if (y < kListY) {
+      if (!keysUp() && !keyboard::present()) {
+        openKeys(true, true);
+        redraw();
+      }
+      return;
+    }
+    if (y >= kListY && y < kListY + rows() * kRowH) {
       const int i = top_ + (y - kListY) / kRowH;
       if (i < (int)results_.size()) choose(results_[i]);
     }
@@ -1005,20 +1022,21 @@ class PartsScreen : public Screen {
 
   void drag(int dy) override {
     drag_ += dy;
-    int rows = 0;
-    while (drag_ >= kRowH) { drag_ -= kRowH; rows--; }
-    while (drag_ <= -kRowH) { drag_ += kRowH; rows++; }
-    if (!rows) return;
+    int by = 0;
+    while (drag_ >= kRowH) { drag_ -= kRowH; by--; }
+    while (drag_ <= -kRowH) { drag_ += kRowH; by++; }
+    if (!by) return;
     const int n = (int)results_.size();
-    top_ = std::max(0, std::min(top_ + rows, std::max(0, n - kRows)));
-    sel_ = std::max(top_, std::min(sel_, top_ + kRows - 1));
+    top_ = std::max(0, std::min(top_ + by, std::max(0, n - rows())));
+    sel_ = std::max(top_, std::min(sel_, top_ + rows() - 1));
     d().startWrite();
     drawList();
     d().endWrite();
   }
 
  private:
-  static constexpr int kListY = 148, kRowH = 50, kRows = 11;
+  static constexpr int kListY = 148, kRowH = 50, kAllRows = 11;
+  int rows() const { return keysUp() ? (keysTop() - kListY) / kRowH : kAllRows; }
   std::string query_;
   std::vector<int> results_;
   std::vector<int> preset_;      // non-empty: picking among these only
@@ -1051,7 +1069,7 @@ class PartsScreen : public Screen {
     if (!n) return;
     sel_ = std::max(0, std::min(n - 1, sel_ + by));
     if (sel_ < top_) top_ = sel_;
-    if (sel_ >= top_ + kRows) top_ = sel_ - kRows + 1;
+    if (sel_ >= top_ + rows()) top_ = sel_ - rows() + 1;
     d().startWrite();
     drawList();
     d().endWrite();
@@ -1069,7 +1087,7 @@ class PartsScreen : public Screen {
       text(36, 88, fit(banner_, Font::Body, 1000), Font::Body, kText, kPanel2);
     } else if (query_.empty()) {
       char b[80];
-      snprintf(b, sizeof(b), "Type part of a name (%d parts)", parts::count());
+      snprintf(b, sizeof(b), "%s part of a name (%d parts)", searchVerb(), parts::count());
       text(36, 88, b, Font::Body, kFaint, kPanel2);
     } else {
       text(36, 88, query_ + "_", Font::Body, kText, kPanel2);
@@ -1080,8 +1098,8 @@ class PartsScreen : public Screen {
   }
 
   void drawList() {
-    d().fillRect(0, kListY, W, kRows * kRowH, kBg);
-    for (int r = 0; r < kRows; r++) {
+    d().fillRect(0, kListY, W, rows() * kRowH, kBg);
+    for (int r = 0; r < rows(); r++) {
       const int i = top_ + r;
       if (i >= (int)results_.size()) break;
       const auto &p = parts::row(results_[i]);
@@ -1108,6 +1126,7 @@ class FilesScreen : public Screen {
  public:
   void enter() {
     if (dir_.empty() || dir_.compare(0, strlen(kImages), kImages) != 0) dir_ = kImages;
+    deleting_ = false;
     scan();
   }
 
@@ -1115,9 +1134,26 @@ class FilesScreen : public Screen {
     d().fillRect(0, 0, W, 56, kPanel);
     d().drawFastHLine(0, 56, W, kBorder);
     text(20, 14, "Choose image", Font::Body, kText, kPanel);
-    text(W - 20, 18, "Enter picks  |  M read me  |  Del deletes  |  Esc goes back", Font::Small, kDim, kPanel, 2);
+    text(W - 20, 18, keyboard::present() ? "Enter picks  |  M read me  |  Del deletes  |  Esc goes back"
+                     : deleting_         ? "tap a file to delete it"
+                                         : "tap to pick  |  tap here to go back",
+         Font::Small, deleting_ ? kWarn : kDim, kPanel, 2);
     std::string where = dir_.substr(strlen("/sdcard/"));
-    text(36, 72, where, Font::Body, kDim, kBg);
+    text(36, 72, fit(where, Font::Body, 860), Font::Body, kDim, kBg);
+    // What the keys M and Del do, for touch.
+    buttons_.clear();
+    if (!keyboard::present()) {
+      Button del;
+      del.id = kDelete; del.x = 1094; del.y = 62; del.w = 170; del.h = 48; del.label = "Delete";
+      del.toggle = true; del.on = deleting_; del.danger = true;
+      buttons_.push_back(del);
+      if (!findReadme(dir_).empty()) {
+        Button me;
+        me.id = kReadMe; me.x = 914; me.y = 62; me.w = 170; me.h = 48; me.label = "Read me";
+        buttons_.push_back(me);
+      }
+      for (auto &b : buttons_) drawButton(b);
+    }
     drawList();
   }
 
@@ -1136,19 +1172,10 @@ class FilesScreen : public Screen {
         goMain();
         return;
       case Special::None:
-        if (!k.ctrl && (k.ch == 'm' || k.ch == 'M')) {
-          const std::string r = findReadme(dir_);
-          if (!r.empty()) goText(r, [this]() { show(this); });
-        }
+        if (!k.ctrl && (k.ch == 'm' || k.ch == 'M')) readMe();
         return;
       case Special::Delete:
-        if (n && !items_[sel_].dir) {
-          const std::string p = dir_ + "/" + items_[sel_].name;
-          confirm("Delete file", "Delete " + items_[sel_].name + " from the card?", "Delete", [p](bool y) {
-            if (y) remove(p.c_str());
-            goFiles();
-          });
-        }
+        if (n) askDelete(sel_);
         return;
       case Special::Up: move(-1); return;
       case Special::Down: move(1); return;
@@ -1165,20 +1192,28 @@ class FilesScreen : public Screen {
       goMain();
       return;
     }
+    const int id = hit(buttons_, x, y);
+    if (id == kReadMe) return readMe();
+    if (id == kDelete) {
+      deleting_ = !deleting_;
+      return redraw();
+    }
     if (y >= kListY && y < kListY + kRows * kRowH) {
       const int i = top_ + (y - kListY) / kRowH;
-      if (i < (int)items_.size()) open(i);
+      if (i >= (int)items_.size()) return;
+      if (deleting_ && !items_[i].dir) askDelete(i);
+      else open(i);
     }
   }
 
   void drag(int dy) override {
     drag_ += dy;
-    int rows = 0;
-    while (drag_ >= kRowH) { drag_ -= kRowH; rows--; }
-    while (drag_ <= -kRowH) { drag_ += kRowH; rows++; }
-    if (!rows) return;
+    int by = 0;
+    while (drag_ >= kRowH) { drag_ -= kRowH; by--; }
+    while (drag_ <= -kRowH) { drag_ += kRowH; by++; }
+    if (!by) return;
     const int n = (int)items_.size();
-    top_ = std::max(0, std::min(top_ + rows, std::max(0, n - kRows)));
+    top_ = std::max(0, std::min(top_ + by, std::max(0, n - kRows)));
     sel_ = std::max(top_, std::min(sel_, top_ + kRows - 1));
     d().startWrite();
     drawList();
@@ -1192,9 +1227,26 @@ class FilesScreen : public Screen {
     uint32_t size;
   };
   static constexpr int kListY = 116, kRowH = 52, kRows = 11;
+  enum { kReadMe = 1, kDelete };
   std::string dir_;
   std::vector<Item> items_;
+  std::vector<Button> buttons_;
+  bool deleting_ = false;  // touch: the next file tapped is to be deleted
   int sel_ = 0, top_ = 0, drag_ = 0;
+
+  void readMe() {
+    const std::string r = findReadme(dir_);
+    if (!r.empty()) goText(r, [this]() { show(this); });
+  }
+
+  void askDelete(int i) {
+    if (items_[i].dir) return;
+    const std::string p = dir_ + "/" + items_[i].name;
+    confirm("Delete file", "Delete " + items_[i].name + " from the card?", "Delete", [p](bool y) {
+      if (y) remove(p.c_str());
+      goFiles();
+    });
+  }
 
   void scan() {
     items_.clear();
@@ -1324,16 +1376,24 @@ class PromptScreen : public Screen {
   size_t max_len = 60;
   std::function<void(bool, const std::string &)> done;
 
+  bool wantsKeys() override { return true; }
+
   void draw() override {
-    panel(140, 180, 1000, 300, kPanel);
-    text(180, 210, title, Font::Body, kText, kPanel);
+    const int y = top();
+    panel(140, y, 1000, 300, kPanel);
+    text(180, y + 30, fit(title, Font::Body, 920), Font::Body, kText, kPanel);
     drawField();
     buttons_.clear();
     Button ok;
-    ok.id = 1; ok.x = 700; ok.y = 390; ok.w = 200; ok.h = 64; ok.label = "OK"; ok.key = "Enter";
+    ok.id = 1; ok.x = 700; ok.y = y + 210; ok.w = 200; ok.h = 64; ok.label = "OK"; ok.key = "Enter";
     Button no;
-    no.id = 2; no.x = 920; no.y = 390; no.w = 200; no.h = 64; no.label = "Cancel"; no.key = "Esc";
+    no.id = 2; no.x = 920; no.y = y + 210; no.w = 200; no.h = 64; no.label = "Cancel"; no.key = "Esc";
     buttons_ = {ok, no};
+    if (!keyboard::present()) {
+      Button clear;  // Del takes one character at a time on the on-screen keys
+      clear.id = 3; clear.x = 180; clear.y = y + 210; clear.w = 200; clear.h = 64; clear.label = "Clear";
+      buttons_.push_back(clear);
+    }
     for (auto &b : buttons_) drawButton(b);
   }
 
@@ -1353,16 +1413,27 @@ class PromptScreen : public Screen {
     const int id = hit(buttons_, x, y);
     if (id == 1) finish(true);
     if (id == 2) finish(false);
+    if (id == 3) {
+      value.clear();
+      redrawField();
+    }
+    if (id < 0 && !keysUp() && !keyboard::present()) {
+      openKeys(true);
+      redraw();
+    }
   }
 
  private:
   std::vector<Button> buttons_;
+  // Moved up out of the way of the on-screen keys.
+  int top() const { return keysUp() ? 40 : 180; }
   void drawField() {
-    panel(180, 270, 920, 64, kPanel2, kAccent);
+    const int y = top() + 90;
+    panel(180, y, 920, 64, kPanel2, kAccent);
     // A long value shows its end, where the typing is.
     std::string v = value + "_";
     while (textWidth(v.c_str(), Font::Body) > 880 && v.size() > 1) v.erase(0, 1);
-    text(200, 288, v, Font::Body, kText, kPanel2);
+    text(200, y + 18, v, Font::Body, kText, kPanel2);
   }
   void redrawField() {
     d().startWrite();
@@ -1430,20 +1501,26 @@ class TypesScreen : public Screen {
     board_ = board;
     all_ = onerom::chipTypes(board);
     query_.clear();
+    openKeys(true, true);
     research(false);
     const std::string cur = settings::get().onerom.type;
     for (size_t i = 0; i < shown_.size(); i++)
       if (shown_[i] == cur) {
         sel_ = (int)i;
-        top_ = std::max(0, sel_ - kRows / 2);
+        top_ = std::max(0, sel_ - rows() / 2);
       }
   }
+
+  bool wantsKeys() override { return true; }
 
   void draw() override {
     d().fillRect(0, 0, W, 56, kPanel);
     d().drawFastHLine(0, 56, W, kBorder);
     text(20, 14, "One ROM chip type", Font::Body, kText, kPanel);
-    text(W - 20, 18, "type to search  |  arrows  |  Enter picks  |  Esc goes back", Font::Small, kDim, kPanel, 2);
+    text(W - 20, 18, keyboard::present() ? "type to search  |  arrows  |  Enter picks  |  Esc goes back"
+                                         : "drag the list  |  tap to pick  |  tap here to go back",
+         Font::Small, kDim, kPanel, 2);
+    if (sel_ < top_ || sel_ >= top_ + rows()) top_ = std::max(0, sel_ - rows() / 2);
     drawQuery();
     drawList();
   }
@@ -1463,8 +1540,8 @@ class TypesScreen : public Screen {
         return;
       case Special::Up: move(-1); return;
       case Special::Down: move(1); return;
-      case Special::PageUp: move(-kRows); return;
-      case Special::PageDown: move(kRows); return;
+      case Special::PageUp: move(-rows()); return;
+      case Special::PageDown: move(rows()); return;
       default: break;
     }
     if (k.ch > ' ' && !k.ctrl && query_.size() < 20) {
@@ -1475,7 +1552,14 @@ class TypesScreen : public Screen {
 
   void tap(int x, int y) override {
     if (y < 56) return goMain();
-    if (y >= kListY && y < kListY + kRows * kRowH) {
+    if (y < kListY) {
+      if (!keysUp() && !keyboard::present()) {
+        openKeys(true, true);
+        redraw();
+      }
+      return;
+    }
+    if (y >= kListY && y < kListY + rows() * kRowH) {
       const int i = top_ + (y - kListY) / kRowH;
       if (i < (int)shown_.size()) choose(shown_[i]);
     }
@@ -1483,20 +1567,21 @@ class TypesScreen : public Screen {
 
   void drag(int dy) override {
     drag_ += dy;
-    int rows = 0;
-    while (drag_ >= kRowH) { drag_ -= kRowH; rows--; }
-    while (drag_ <= -kRowH) { drag_ += kRowH; rows++; }
-    if (!rows) return;
+    int by = 0;
+    while (drag_ >= kRowH) { drag_ -= kRowH; by--; }
+    while (drag_ <= -kRowH) { drag_ += kRowH; by++; }
+    if (!by) return;
     const int n = (int)shown_.size();
-    top_ = std::max(0, std::min(top_ + rows, std::max(0, n - kRows)));
-    sel_ = std::max(top_, std::min(sel_, top_ + kRows - 1));
+    top_ = std::max(0, std::min(top_ + by, std::max(0, n - rows())));
+    sel_ = std::max(top_, std::min(sel_, top_ + rows() - 1));
     d().startWrite();
     drawList();
     d().endWrite();
   }
 
  private:
-  static constexpr int kListY = 148, kRowH = 50, kRows = 11;
+  static constexpr int kListY = 148, kRowH = 50, kAllRows = 11;
+  int rows() const { return keysUp() ? (keysTop() - kListY) / kRowH : kAllRows; }
   std::string board_, query_;
   std::vector<std::string> all_, shown_;
   int sel_ = 0, top_ = 0, drag_ = 0;
@@ -1522,7 +1607,7 @@ class TypesScreen : public Screen {
     if (!n) return;
     sel_ = std::max(0, std::min(n - 1, sel_ + by));
     if (sel_ < top_) top_ = sel_;
-    if (sel_ >= top_ + kRows) top_ = sel_ - kRows + 1;
+    if (sel_ >= top_ + rows()) top_ = sel_ - rows() + 1;
     d().startWrite();
     drawList();
     d().endWrite();
@@ -1541,7 +1626,7 @@ class TypesScreen : public Screen {
   void drawQuery() {
     panel(16, 72, 1248, 60, kPanel2, kAccent);
     if (query_.empty()) {
-      text(36, 88, "Type part of a name (" + std::to_string(all_.size()) + " types for " + onerom::boardLabel(board_) + ")",
+      text(36, 88, std::string(searchVerb()) + " part of a name (" + std::to_string(all_.size()) + " types for " + onerom::boardLabel(board_) + ")",
            Font::Body, kFaint, kPanel2);
     } else {
       text(36, 88, query_ + "_", Font::Body, kText, kPanel2);
@@ -1549,8 +1634,8 @@ class TypesScreen : public Screen {
   }
 
   void drawList() {
-    d().fillRect(0, kListY, W, kRows * kRowH, kBg);
-    for (int r = 0; r < kRows; r++) {
+    d().fillRect(0, kListY, W, rows() * kRowH, kBg);
+    for (int r = 0; r < rows(); r++) {
       const int i = top_ + r;
       if (i >= (int)shown_.size()) break;
       const auto ct = onerom::chipType(shown_[i]);
@@ -1589,17 +1674,28 @@ class SlotsScreen : public Screen {
     if (i < max) rows_.push_back({i, "", "", false, true});
     rows_.push_back({-1, "", "", false, false});
     sel_ = 0;
+    removing_ = false;
   }
 
   void draw() override {
     d().fillRect(0, 0, W, 56, kPanel);
     d().drawFastHLine(0, 56, W, kBorder);
     text(20, 14, "Program into which slot?", Font::Body, kText, kPanel);
-    text(W - 20, 18, "arrows  |  Enter programs  |  Del removes a slot  |  Esc goes back", Font::Small, kDim, kPanel, 2);
+    text(W - 20, 18, keyboard::present() ? "arrows  |  Enter programs  |  Del removes a slot  |  Esc goes back"
+                     : removing_         ? "tap a slot to remove it"
+                                         : "tap to program  |  tap here to go back",
+         Font::Small, removing_ ? kWarn : kDim, kPanel, 2);
     const auto &o = settings::get().onerom;
     panel(16, 72, 1248, 60, kPanel2);
+    const bool touch = !keyboard::present();
     text(36, 88, fit(baseName(app::image().path) + "  (" + bytesText(app::image().size) + ")  as a " + o.type,
-                     Font::Body, 1200), Font::Body, kText, kPanel2);
+                     Font::Body, touch ? 1020 : 1200), Font::Body, kText, kPanel2);
+    remove_ = Button();
+    if (touch) {  // what Del does, for touch
+      remove_.id = 1; remove_.x = 1086; remove_.y = 78; remove_.w = 170; remove_.h = 48; remove_.label = "Remove";
+      remove_.toggle = true; remove_.on = removing_; remove_.danger = true;
+      drawButton(remove_);
+    }
     drawList();
     text(36, 670, "The jumpers pick the slot it serves: slot 0 with none fitted. Other slots are kept: the Tab5 "
                   "checks them against its record first.", Font::Small, kDim, kBg);
@@ -1619,7 +1715,15 @@ class SlotsScreen : public Screen {
 
   void tap(int x, int y) override {
     if (y < 56) return goMain();
-    if (y >= kListY && y < kListY + (int)rows_.size() * kRowH) choose((y - kListY) / kRowH);
+    if (hit({remove_}, x, y) == 1) {
+      removing_ = !removing_;
+      return redraw();
+    }
+    if (y >= kListY && y < kListY + (int)rows_.size() * kRowH) {
+      const int row = (y - kListY) / kRowH;
+      if (removing_) removeAt(row);
+      else choose(row);
+    }
   }
 
  private:
@@ -1630,6 +1734,8 @@ class SlotsScreen : public Screen {
   };
   static constexpr int kListY = 148, kRowH = 54;
   std::vector<Row> rows_;
+  Button remove_;
+  bool removing_ = false;  // touch: the next slot tapped is to be removed
   int sel_ = 0;
 
   void move(int by) {
@@ -1961,6 +2067,7 @@ void prompt(const std::string &title, const std::string &initial,
   g_prompt.title = title;
   g_prompt.value = initial;
   g_prompt.done = done;
+  openKeys(true);
   show(&g_prompt);
 }
 

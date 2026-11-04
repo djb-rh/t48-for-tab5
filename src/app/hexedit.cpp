@@ -4,7 +4,8 @@
 // Keys: arrows, PgUp/PgDn, Home/End (row), Ctrl+Home/End (file); hex digits
 // (or characters, on the ASCII side) type over bytes; Tab switches sides;
 // Ctrl+G go to, Ctrl+F find, Ctrl+N find next, Ctrl+Z undo, Ctrl+S save,
-// Ctrl+A save as, Esc back. Touch: tap a byte, drag to scroll, toolbar.
+// Ctrl+A save as, Esc back. Touch: tap a byte, drag to scroll, toolbar; with
+// no clip-on keyboard, tapping a byte brings up the on-screen keys.
 
 #include <esp_heap_caps.h>
 #include <esp_rom_crc.h>
@@ -26,7 +27,7 @@ using keyboard::Special;
 namespace {
 
 constexpr uint32_t kMaxSize = 16u << 20;
-constexpr int kGridY = 136, kRowH = 24, kRows = 23;
+constexpr int kGridY = 136, kRowH = 24, kAllRows = 23, kStatusH = 26;
 constexpr int kCharW = 14;
 constexpr int kAddrX = 36;
 constexpr int kHexX = kAddrX + 10 * kCharW;           // after "00000000  "
@@ -67,10 +68,14 @@ class HexScreen : public Screen {
     modified_ = false;
     undo_.clear();
     crc_valid_ = false;
+    openKeys(false);
     return true;
   }
 
+  bool wantsKeys() override { return true; }
+
   void draw() override {
+    if (pos_ / 16 < top_ || pos_ / 16 >= top_ + rows()) top_ = pos_ / 16 - std::min<uint32_t>(pos_ / 16, rows() / 2);
     drawHeader();
     buttons_.clear();
     const struct { int id; const char *label, *key; } tools[] = {
@@ -131,8 +136,8 @@ class HexScreen : public Screen {
       case Special::Right: return moveTo((int64_t)pos_ + 1);
       case Special::Up: return moveTo((int64_t)pos_ - 16);
       case Special::Down: return moveTo((int64_t)pos_ + 16);
-      case Special::PageUp: return moveTo((int64_t)pos_ - 16 * kRows);
-      case Special::PageDown: return moveTo((int64_t)pos_ + 16 * kRows);
+      case Special::PageUp: return moveTo((int64_t)pos_ - 16 * rows());
+      case Special::PageDown: return moveTo((int64_t)pos_ + 16 * rows());
       case Special::Home: return moveTo(pos_ & ~15u);
       case Special::End: return moveTo(std::min<int64_t>((pos_ | 15u), size_ - 1));
       case Special::Backspace: return moveTo((int64_t)pos_ - 1);
@@ -165,7 +170,7 @@ class HexScreen : public Screen {
   void tap(int x, int y) override {
     const int id = hit(buttons_, x, y);
     if (id > 0) return tool(id);
-    if (y < kGridY || y >= kGridY + kRows * kRowH) return;
+    if (y < kGridY || y >= kGridY + rows() * kRowH) return;
     const uint32_t row = top_ + (y - kGridY) / kRowH;
     int col = -1;
     bool ascii = false;
@@ -185,18 +190,22 @@ class HexScreen : public Screen {
     ascii_ = ascii;
     nibble_ = 0;
     moveTo(p);
+    if (!keyboard::present() && !keysUp()) {
+      openKeys(true);
+      redraw();
+    }
   }
 
   void drag(int dy) override {
     drag_ += dy;
-    int rows = 0;
-    while (drag_ >= kRowH) { drag_ -= kRowH; rows--; }
-    while (drag_ <= -kRowH) { drag_ += kRowH; rows++; }
-    if (!rows) return;
-    const int64_t maxTop = std::max<int64_t>(0, (int64_t)(size_ + 15) / 16 - kRows);
-    top_ = (uint32_t)std::max<int64_t>(0, std::min<int64_t>((int64_t)top_ + rows, maxTop));
+    int by = 0;
+    while (drag_ >= kRowH) { drag_ -= kRowH; by--; }
+    while (drag_ <= -kRowH) { drag_ += kRowH; by++; }
+    if (!by) return;
+    const int64_t maxTop = std::max<int64_t>(0, (int64_t)(size_ + 15) / 16 - rows());
+    top_ = (uint32_t)std::max<int64_t>(0, std::min<int64_t>((int64_t)top_ + by, maxTop));
     // Keep the cursor on screen.
-    const uint32_t first = top_ * 16, last = std::min<uint32_t>(size_ - 1, (top_ + kRows) * 16 - 1);
+    const uint32_t first = top_ * 16, last = std::min<uint32_t>(size_ - 1, (top_ + rows()) * 16 - 1);
     pos_ = std::max(first, std::min(pos_, last));
     d().startWrite();
     drawGrid();
@@ -225,6 +234,9 @@ class HexScreen : public Screen {
     data_ = dirty_ = nullptr;
     size_ = 0;
   }
+
+  // The rows that fit above the on-screen keys, when they are up.
+  int rows() const { return keysUp() ? (keysTop() - kStatusH - kGridY) / kRowH : kAllRows; }
 
   bool isDirty(uint32_t p) const { return dirty_[p >> 3] & (1 << (p & 7)); }
 
@@ -285,13 +297,13 @@ class HexScreen : public Screen {
   }
 
   void drawGrid() {
-    d().fillRect(0, kGridY - 8, W, kRows * kRowH + 8, kBg);
-    for (int r = 0; r < kRows; r++) drawRow(top_ + r);
+    d().fillRect(0, kGridY - 8, W, rows() * kRowH + 8, kBg);
+    for (int r = 0; r < rows(); r++) drawRow(top_ + r);
   }
 
   void drawStatus() {
-    const int y = 694;
-    d().fillRect(0, y, W, H - y, kPanel);
+    const int y = keysUp() ? keysTop() - kStatusH : 694;
+    d().fillRect(0, y, W, kStatusH, kPanel);
     char b[160];
     const uint8_t v = data_[pos_];
     char bits[9];
@@ -307,7 +319,7 @@ class HexScreen : public Screen {
 
   void refreshCursor(uint32_t old) {
     d().startWrite();
-    if (old / 16 != pos_ / 16 && old / 16 >= top_ && old / 16 < top_ + kRows) drawRow(old / 16);
+    if (old / 16 != pos_ / 16 && old / 16 >= top_ && old / 16 < top_ + rows()) drawRow(old / 16);
     drawRow(pos_ / 16);
     drawStatus();
     d().endWrite();
@@ -320,8 +332,8 @@ class HexScreen : public Screen {
     pos_ = (uint32_t)p;
     if (pos_ != old) nibble_ = 0;
     const uint32_t row = pos_ / 16;
-    if (row < top_ || row >= top_ + kRows) {
-      top_ = row < top_ ? row : row - kRows + 1;
+    if (row < top_ || row >= top_ + rows()) {
+      top_ = row < top_ ? row : row - rows() + 1;
       d().startWrite();
       drawGrid();
       drawStatus();
@@ -343,7 +355,7 @@ class HexScreen : public Screen {
       if (p + pattern_.size() > n) continue;
       if (!memcmp(data_ + p, pattern_.data(), pattern_.size())) {
         pos_ = p;
-        top_ = pos_ / 16 >= (uint32_t)kRows / 2 ? pos_ / 16 - kRows / 2 : 0;
+        top_ = pos_ / 16 >= (uint32_t)rows() / 2 ? pos_ / 16 - rows() / 2 : 0;
         return true;
       }
     }
@@ -408,7 +420,7 @@ class HexScreen : public Screen {
           modified_ = !undo_.empty();
           nibble_ = 0;
           pos_ = u.first;
-          if (pos_ / 16 < top_ || pos_ / 16 >= top_ + kRows) top_ = pos_ / 16;
+          if (pos_ / 16 < top_ || pos_ / 16 >= top_ + rows()) top_ = pos_ / 16;
           redraw();
         }
         break;
