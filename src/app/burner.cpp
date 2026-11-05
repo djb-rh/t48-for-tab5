@@ -16,6 +16,7 @@
 #include "app.h"
 #include "burner.h"
 #include "console.h"
+#include "host.h"
 #include "keyboard.h"
 #include "parts.h"
 #include "onerom.h"
@@ -61,7 +62,64 @@ void updateStatus() {
   }
 }
 
+// Screen blanking, when the launcher sets blank_ms. M5.update() is held back
+// from when the screen goes dark until the waking finger lifts, so that tap
+// can't press anything; a waking key is dropped. A job in progress keeps the
+// screen on.
+bool g_blanked = false;
+bool g_wake_finger = false;  // the finger that woke the screen is still down
+uint8_t g_brightness = 0;
+uint32_t g_input_ms = 0, g_seen_keys = 0, g_touch_ms = 0;
+
+// M5.Touch isn't updating while blanked, so this asks the panel directly.
+// False when it's too soon to ask again.
+bool pollFinger(uint32_t now, bool *down) {
+  if (now - g_touch_ms < 40) return false;
+  g_touch_ms = now;
+  lgfx::touch_point_t tp;
+  *down = M5.Display.getTouchRaw(&tp, 1) > 0;
+  return true;
+}
+
+// Once per loop, after the keyboard is read. False: hold M5.update() back.
+bool screenTick(uint32_t now) {
+  const uint32_t keys = keyboard::keyCount();
+  const bool typed = keys != g_seen_keys;
+  g_seen_keys = keys;
+  bool down = false;
+  if (g_blanked) {
+    if (typed) {
+      blank(false);
+      keyboard::flush();
+      return true;
+    }
+    if (pollFinger(now, &down) && down) {
+      blank(false);
+      g_wake_finger = true;
+    }
+    return false;
+  }
+  if (g_wake_finger) {
+    if (pollFinger(now, &down) && !down) g_wake_finger = false;
+    return !g_wake_finger;
+  }
+  if (typed || M5.Touch.getCount() || runner::busy()) g_input_ms = now;
+  const uint32_t limit = host::get().blank_ms;
+  if (limit && now - g_input_ms >= limit) blank(true);
+  return !g_blanked;
+}
+
 }  // namespace
+
+void blank(bool on) {
+  if (on == g_blanked) return;
+  if (on) g_brightness = M5.Display.getBrightness();
+  g_blanked = on;
+  g_input_ms = millis();
+  M5.Display.setBrightness(on ? 0 : g_brightness);
+}
+
+bool blanked() { return g_blanked; }
 
 void setup() {
   // Local time (US Eastern) from the start: the clock survives a soft reset,
@@ -112,9 +170,9 @@ void setup() {
 }
 
 void loop() {
-  M5.update();
   const uint32_t now = millis();
   keyboard::tick(now);
+  if (screenTick(now)) M5.update();
   console::poll();
   web::loop();
   onerom::tick();

@@ -33,6 +33,10 @@ bool present();
 void pretendAbsent(bool absent);
 // The next key typed, if any. Keys are queued, so a fast typist loses none.
 bool take(Key *out);
+// Drops the keys waiting for take().
+void flush();
+// Counts every key so far: a change means one was typed.
+uint32_t keyCount();
 // Queues a key as if it had been typed (serial test console).
 void inject(const Key &k);
 // Prints what the keyboard has sent since boot, for bring-up over serial.

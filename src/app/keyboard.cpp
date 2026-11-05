@@ -72,7 +72,10 @@ bool answers() {
   return ok;
 }
 
+uint32_t g_keys = 0;
+
 void push(const Key &k) {
+  g_keys++;
   const int next = (g_head + 1) % kQueue;
   if (next == g_tail) return;
   g_queue[g_head] = k;
@@ -178,6 +181,9 @@ void dumpLog() {
 }
 
 void inject(const Key &k) { push(k); }
+
+void flush() { g_tail = g_head; }
+uint32_t keyCount() { return g_keys; }
 
 bool take(Key *out) {
   if (g_head == g_tail) return false;

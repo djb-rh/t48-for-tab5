@@ -38,6 +38,7 @@
 #include "../core/usb_esp.h"
 #include "../core/onerom_ffi.h"
 #include "app.h"
+#include "burner.h"
 #include "parts.h"
 #include "sdcard.h"
 #include "web.h"
@@ -316,6 +317,11 @@ void run(const std::string &line) {
     return done(0);
   }
   if (c == "key" && line.size() > 4) return done(cmdKey(line.substr(4)));
+  if (c == "blank") {
+    if (a.size() > 1) burner::blank(a[1] == "1");
+    Serial.printf("blank: %s, backlight %u\n", burner::blanked() ? "dark" : "lit", M5.Display.getBrightness());
+    return done(0);
+  }
   if (c == "nokb" && a.size() > 1) {
     // Tests the on-screen keys with the clip-on keyboard still attached.
     keyboard::pretendAbsent(a[1] == "1");
